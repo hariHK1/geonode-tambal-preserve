@@ -48,8 +48,16 @@ if [ ${#DAFTAR[@]} -eq 0 ]; then
   exit 1
 fi
 
+kode_lebih_baru() {  # berkas kode di kontainer diubah SETELAH kontainer dimulai → proses masih memakai kode lama
+  local mulai ubah
+  mulai=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' "$1" 2>/dev/null)" +%s 2>/dev/null) || return 1
+  ubah=$(docker exec "$1" stat -c %Y "$2" 2>/dev/null) || return 1
+  [ -n "$mulai" ] && [ -n "$ubah" ] && [ "$ubah" -gt "$mulai" ]
+}
+
 echo "Kontainer GeoNode: ${DAFTAR[*]}"
 BERUBAH=()
+BASI=()
 GAGAL=0
 for nama in "${DAFTAR[@]}"; do
   echo "== $nama"
@@ -63,22 +71,37 @@ for nama in "${DAFTAR[@]}"; do
     2|3) [ "$AKSI" = cek ] || GAGAL=1 ;;  # pada "cek", 2/3 hanyalah status
     *) GAGAL=1 ;;
   esac
+  berkas=$(head -n1 <<< "$keluaran" | sed -n 's/^GeoNode .* | //p')
+  if [ -n "$berkas" ] && kode_lebih_baru "$nama" "$berkas"; then
+    BASI+=("$nama")
+    echo "   Berkas kode diubah setelah kontainer ini dimulai - prosesnya masih memakai kode LAMA."
+  fi
 done
 
+# Kontainer GeoNode sering berbagi berkas kode (volume /usr/src/geonode): kontainer yang tidak "diubah" bisa ikut
+# berubah karena berkasnya sama. Proses baru memakai kode baru setelah dimulai ulang, jadi setelah ada perubahan
+# SEMUA kontainer GeoNode dimulai ulang; tanpa perubahan, yang dimulai ulang hanya kontainer yang prosesnya basi.
+ULANG=()
 if [ ${#BERUBAH[@]} -gt 0 ]; then
-  # Kontainer GeoNode sering berbagi berkas kode (volume /usr/src/geonode): kontainer yang tidak "diubah" bisa
-  # ikut berubah karena berkasnya sama. Proses yang sedang berjalan baru memakai kode baru setelah dimulai ulang,
-  # jadi SEMUA kontainer GeoNode dimulai ulang, bukan hanya yang mengubah berkas.
+  ULANG=("${DAFTAR[@]}")
   echo
   echo "Kode berubah (lewat: ${BERUBAH[*]}). SEMUA kontainer GeoNode perlu DIMULAI ULANG agar perubahan dipakai,"
-  echo "karena kontainer bisa berbagi berkas kode yang sama: ${DAFTAR[*]}"
+  echo "karena kontainer bisa berbagi berkas kode yang sama: ${ULANG[*]}"
+elif [ ${#BASI[@]} -gt 0 ]; then
+  ULANG=("${BASI[@]}")
+  echo
+  echo "Kontainer berikut masih menjalankan kode lama dan perlu DIMULAI ULANG: ${ULANG[*]}"
+fi
+if [ ${#ULANG[@]} -gt 0 ] && [ "$AKSI" = cek ]; then  # "cek" tidak pernah mengubah apa pun
+  echo "Jalankan: docker restart ${ULANG[*]}   (atau: $0 tambal, yang menawarkan mulai ulang)"
+elif [ ${#ULANG[@]} -gt 0 ]; then
   echo "(django & celery berhenti sebentar, beberapa detik)."
   jawab=y
   if [ "$YA" != "-y" ]; then read -r -p "Mulai ulang sekarang? [y/N] " jawab; fi
   if [[ "$jawab" =~ ^[yY]$ ]]; then
-    docker restart "${DAFTAR[@]}" >/dev/null && echo "Dimulai ulang: ${DAFTAR[*]}"
+    docker restart "${ULANG[@]}" >/dev/null && echo "Dimulai ulang: ${ULANG[*]}"
   else
-    echo "Belum dimulai ulang. Jalankan sendiri: docker restart ${DAFTAR[*]}"
+    echo "Belum dimulai ulang. Jalankan sendiri: docker restart ${ULANG[*]}"
   fi
 fi
 exit $GAGAL
