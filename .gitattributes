@@ -1,0 +1,2 @@
+# Skrip shell untuk server Linux harus tetap LF walau dikerjakan di Windows (autocrlf)
+*.sh text eol=lf
