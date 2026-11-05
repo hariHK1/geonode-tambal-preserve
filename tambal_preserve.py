@@ -40,9 +40,12 @@ def lokasi():
 def versi_geonode():
     try:
         import geonode  # ringan: hanya informasi versi
-        return getattr(geonode, "__version__", None) or geonode.get_version()
+        v = getattr(geonode, "__version__", None)
     except Exception:  # noqa: BLE001 — versi hanya informasi
         return "?"
+    if isinstance(v, tuple):  # GeoNode: (5, 0, 0, 'dev', 0) → "5.0.0-dev"
+        return ".".join(str(x) for x in v[:3]) + ("-%s" % v[3] if len(v) > 3 and v[3] != "final" else "")
+    return str(v or "?")
 
 
 def _baris(potongan):

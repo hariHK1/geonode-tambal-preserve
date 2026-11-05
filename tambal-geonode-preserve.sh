@@ -66,15 +66,19 @@ for nama in "${DAFTAR[@]}"; do
 done
 
 if [ ${#BERUBAH[@]} -gt 0 ]; then
+  # Kontainer GeoNode sering berbagi berkas kode (volume /usr/src/geonode): kontainer yang tidak "diubah" bisa
+  # ikut berubah karena berkasnya sama. Proses yang sedang berjalan baru memakai kode baru setelah dimulai ulang,
+  # jadi SEMUA kontainer GeoNode dimulai ulang, bukan hanya yang mengubah berkas.
   echo
-  echo "Kode berubah di: ${BERUBAH[*]}. Kontainer perlu DIMULAI ULANG agar perubahan dipakai"
+  echo "Kode berubah (lewat: ${BERUBAH[*]}). SEMUA kontainer GeoNode perlu DIMULAI ULANG agar perubahan dipakai,"
+  echo "karena kontainer bisa berbagi berkas kode yang sama: ${DAFTAR[*]}"
   echo "(django & celery berhenti sebentar, beberapa detik)."
   jawab=y
   if [ "$YA" != "-y" ]; then read -r -p "Mulai ulang sekarang? [y/N] " jawab; fi
   if [[ "$jawab" =~ ^[yY]$ ]]; then
-    docker restart "${BERUBAH[@]}" >/dev/null && echo "Dimulai ulang: ${BERUBAH[*]}"
+    docker restart "${DAFTAR[@]}" >/dev/null && echo "Dimulai ulang: ${DAFTAR[*]}"
   else
-    echo "Belum dimulai ulang. Jalankan sendiri: docker restart ${BERUBAH[*]}"
+    echo "Belum dimulai ulang. Jalankan sendiri: docker restart ${DAFTAR[*]}"
   fi
 fi
 exit $GAGAL

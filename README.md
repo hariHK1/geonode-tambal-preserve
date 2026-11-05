@@ -87,8 +87,18 @@ memulihkan record CSW-nya.
 
 ## Penting setelah upgrade
 
-Tambalan tersimpan **di dalam kontainer**, jadi **hilang bila kontainer dibuat ulang** (upgrade image,
-`docker compose up` dengan image baru). Setelah setiap upgrade, jalankan `cek`, lalu `tambal` bila perlu.
+Tambalan tersimpan di berkas kode yang dipakai kontainer:
+
+- **Kode ada di dalam image** (umum): tambalan **hilang bila kontainer dibuat ulang** (upgrade image,
+  `docker compose up` dengan image baru).
+- **Kode dipasang dari folder server** (mis. `~/geonode` → `/usr/src/geonode`, sering dipakai bersama oleh django
+  & celery): tambalan bertahan walau kontainer dibuat ulang, tetapi terlihat sebagai perubahan oleh git di folder
+  itu dan bisa tertimpa saat folder itu diperbarui (`git pull`). Cek dengan
+  `docker inspect django4geonode --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'`.
+
+Karena itu, setelah setiap upgrade atau pembaruan kode GeoNode, jalankan `cek`, lalu `tambal` bila perlu. Skrip
+selalu memulai ulang **semua** kontainer GeoNode setelah ada perubahan, karena kontainer yang berbagi berkas ikut
+berubah walau tidak dilaporkan "Ditambal".
 
 Supaya permanen, masukkan ke Dockerfile image GeoNode (mis. proyek *geonode-project*), setelah GeoNode terpasang:
 
