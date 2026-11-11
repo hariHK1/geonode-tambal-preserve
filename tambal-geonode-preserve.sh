@@ -6,6 +6,8 @@
 #   ./tambal-geonode-preserve.sh tambal           # tambalan GeoMDB (preserve)
 #   ./tambal-geonode-preserve.sh tambal-unggah    # tambalan unggah metadata UI (termasuk tambalan GeoMDB; GeoNode 5.x)
 #   ./tambal-geonode-preserve.sh pulihkan-unggah  # lepas tambalan unggah metadata; tambalan GeoMDB tetap
+#   ./tambal-geonode-preserve.sh tambal-mdb       # tambalan CSW ISO 19115-3 / MDB (GeoNode 5.x; pip saxonche, perlu internet)
+#   ./tambal-geonode-preserve.sh pulihkan-mdb     # lepas tambalan CSW ISO 19115-3
 #   ./tambal-geonode-preserve.sh pulihkan         # kembalikan kode asli GeoNode (lepas semua tambalan)
 #   tambahkan -y untuk melewati konfirmasi mulai ulang
 #   KONTAINER="django4geonode celery4geonode" ./tambal-geonode-preserve.sh cek   # pilih kontainer sendiri
@@ -18,6 +20,10 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 PENAMBAL="$DIR/tambal_preserve.py"
 MODUL="$DIR/geomdb_unggah.py"
 MODUL_KONTAINER=/tmp/geomdb_unggah.py
+MODUL_MDB="$DIR/geomdb_mdb.py"
+XSLT_MDB="$DIR/xslt-mdb"
+MODUL_MDB_KONTAINER=/tmp/geomdb_mdb.py
+XSLT_KONTAINER=/tmp/geomdb_xslt
 AKSI=${1:-}
 YA=${2:-}
 
@@ -33,6 +39,10 @@ Tambal GeoNode untuk GeoMDB
        perubahan form metadata ikut ditulis ke XML
   4) Lepas tambalan unggah metadata (tambalan GeoMDB tetap terpasang)
   5) Pulihkan kode asli GeoNode (lepas semua tambalan)
+  6) Tambalan CSW ISO 19115-3 / MDB (butuh GeoNode 5.x dan internet untuk memasang saxonche)
+       CSW juga menyajikan outputSchema http://standards.iso.org/iso/19115/-3/mdb/2.0, hasil konversi
+       XSLT seperti GeoNetwork (lolos XSD + Schematron ISO 19115-3:2018)
+  7) Lepas tambalan CSW ISO 19115-3
   0) Keluar
 TEKS
   local pilih
@@ -43,6 +53,8 @@ TEKS
     3) AKSI=tambal-unggah ;;
     4) AKSI=pulihkan-unggah ;;
     5) AKSI=pulihkan ;;
+    6) AKSI=tambal-mdb ;;
+    7) AKSI=pulihkan-mdb ;;
     0) exit 0 ;;
     *) echo "Pilihan tidak dikenal: $pilih"; exit 1 ;;
   esac
@@ -53,8 +65,8 @@ if [ -z "$AKSI" ]; then
   if [ -t 0 ]; then menu; else AKSI=cek; fi
 fi
 case "$AKSI" in
-  cek|tambal|tambal-unggah|pulihkan-unggah|pulihkan) ;;
-  *) echo "pemakaian: $0 [cek|tambal|tambal-unggah|pulihkan-unggah|pulihkan] [-y]"; exit 1 ;;
+  cek|tambal|tambal-unggah|pulihkan-unggah|tambal-mdb|pulihkan-mdb|pulihkan) ;;
+  *) echo "pemakaian: $0 [cek|tambal|tambal-unggah|tambal-mdb|pulihkan-unggah|pulihkan-mdb|pulihkan] [-y]"; exit 1 ;;
 esac
 command -v docker >/dev/null 2>&1 || { echo "GALAT: perintah docker tidak ditemukan. Untuk GeoNode tanpa Docker:"
                                        echo "       python $PENAMBAL $AKSI   (di virtualenv GeoNode)"; exit 1; }
@@ -64,6 +76,12 @@ if [ ! -f "$MODUL" ]; then
     echo "GALAT: $MODUL tidak ditemukan (letakkan di folder yang sama)."; exit 1
   fi
   MODUL=""
+fi
+if [ ! -f "$MODUL_MDB" ] || [ ! -d "$XSLT_MDB" ]; then
+  if [ "$AKSI" = tambal-mdb ]; then
+    echo "GALAT: $MODUL_MDB atau folder $XSLT_MDB tidak ditemukan (letakkan di folder yang sama)."; exit 1
+  fi
+  MODUL_MDB=""
 fi
 
 python_kontainer() {  # jalur python di kontainer, kosong bila tidak ada
@@ -113,9 +131,17 @@ for nama in "${DAFTAR[@]}"; do
       echo "   GALAT: $MODUL gagal disalin ke kontainer"; GAGAL=1; continue
     fi
   fi
+  if [ -n "$MODUL_MDB" ]; then  # modul + XSLT tambalan CSW ISO 19115-3, dengan cara yang sama
+    docker exec -u root "$nama" rm -rf "$XSLT_KONTAINER" >/dev/null 2>&1  # docker cp ke folder yang ada = subfolder
+    if docker cp "$MODUL_MDB" "$nama:$MODUL_MDB_KONTAINER" >/dev/null 2>&1        && docker cp "$XSLT_MDB" "$nama:$XSLT_KONTAINER" >/dev/null 2>&1; then
+      ENV_MODUL+=(-e "GEOMDB_MDB_MODUL=$MODUL_MDB_KONTAINER" -e "GEOMDB_XSLT=$XSLT_KONTAINER")
+    elif [ "$AKSI" = tambal-mdb ]; then
+      echo "   GALAT: $MODUL_MDB / $XSLT_MDB gagal disalin ke kontainer"; GAGAL=1; continue
+    fi
+  fi
   keluaran=$(docker exec -i -u root ${ENV_MODUL[@]+"${ENV_MODUL[@]}"} "$nama" "$py" - "$AKSI" < "$PENAMBAL" 2>&1)
   kode=$?
-  [ ${#ENV_MODUL[@]} -gt 0 ] && docker exec -u root "$nama" rm -f "$MODUL_KONTAINER" >/dev/null 2>&1
+  [ ${#ENV_MODUL[@]} -gt 0 ] && docker exec -u root "$nama" rm -rf "$MODUL_KONTAINER" "$MODUL_MDB_KONTAINER" "$XSLT_KONTAINER" >/dev/null 2>&1
   echo "$keluaran" | sed 's/^/   /'
   case "$kode" in
     0) grep -qE '^(Ditambal|Diperbarui|Dilepas|Kode asli GeoNode dikembalikan)' <<< "$keluaran" && BERUBAH+=("$nama") ;;

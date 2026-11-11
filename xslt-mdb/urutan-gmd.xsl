@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DIBANGKITKAN oleh buat_urutan_gmd.py dari XSD ISO 19139 (gmd 1.0); jangan disunting manual.
+     Urutan elemen anak tiap kelas gmd (termasuk elemen kelas induknya). -->
+<xsl:stylesheet version="2.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+                xmlns:g="urn:geomdb" exclude-result-prefixes="#all">
+  <xsl:variable name="g:urutan-gmd" as="element()*">
+    <u k="AbstractDQ_Completeness">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDQ_Element">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDQ_LogicalConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDQ_PositionalAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDQ_TemporalAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDQ_ThematicAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="AbstractDS_Aggregate">composedOf seriesMetadata subset superset</u>
+    <u k="AbstractMD_Identification">citation abstract purpose credit status pointOfContact resourceMaintenance graphicOverview resourceFormat descriptiveKeywords resourceSpecificUsage resourceConstraints aggregationInfo</u>
+    <u k="AbstractRS_ReferenceSystem">name domainOfValidity</u>
+    <u k="CI_Address">deliveryPoint city administrativeArea postalCode country electronicMailAddress</u>
+    <u k="CI_Citation">title alternateTitle date edition editionDate identifier citedResponsibleParty presentationForm series otherCitationDetails collectiveTitle ISBN ISSN</u>
+    <u k="CI_Contact">phone address onlineResource hoursOfService contactInstructions</u>
+    <u k="CI_Date">date dateType</u>
+    <u k="CI_OnlineResource">linkage protocol applicationProfile name description function</u>
+    <u k="CI_ResponsibleParty">individualName organisationName positionName contactInfo role</u>
+    <u k="CI_Series">name issueIdentification page</u>
+    <u k="CI_Telephone">voice facsimile</u>
+    <u k="DQ_AbsoluteExternalPositionalAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_AccuracyOfATimeMeasurement">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_CompletenessCommission">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_CompletenessOmission">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_ConceptualConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_ConformanceResult">specification explanation pass</u>
+    <u k="DQ_DataQuality">scope report lineage</u>
+    <u k="DQ_DomainConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_FormatConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_GriddedDataPositionalAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_NonQuantitativeAttributeAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_QuantitativeAttributeAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_QuantitativeResult">valueType valueUnit errorStatistic value</u>
+    <u k="DQ_RelativeInternalPositionalAccuracy">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_Scope">level extent levelDescription</u>
+    <u k="DQ_TemporalConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_TemporalValidity">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_ThematicClassificationCorrectness">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DQ_TopologicalConsistency">nameOfMeasure measureIdentification measureDescription evaluationMethodType evaluationMethodDescription evaluationProcedure dateTime result</u>
+    <u k="DS_DataSet">has partOf</u>
+    <u k="DS_Initiative">composedOf seriesMetadata subset superset</u>
+    <u k="DS_OtherAggregate">composedOf seriesMetadata subset superset</u>
+    <u k="DS_Platform">composedOf seriesMetadata subset superset</u>
+    <u k="DS_ProductionSeries">composedOf seriesMetadata subset superset</u>
+    <u k="DS_Sensor">composedOf seriesMetadata subset superset</u>
+    <u k="DS_Series">composedOf seriesMetadata subset superset</u>
+    <u k="DS_StereoMate">composedOf seriesMetadata subset superset</u>
+    <u k="EX_BoundingPolygon">extentTypeCode polygon</u>
+    <u k="EX_Extent">description geographicElement temporalElement verticalElement</u>
+    <u k="EX_GeographicBoundingBox">extentTypeCode westBoundLongitude eastBoundLongitude southBoundLatitude northBoundLatitude</u>
+    <u k="EX_GeographicDescription">extentTypeCode geographicIdentifier</u>
+    <u k="EX_SpatialTemporalExtent">extent spatialExtent</u>
+    <u k="EX_VerticalExtent">minimumValue maximumValue verticalCRS</u>
+    <u k="LI_Lineage">statement processStep source</u>
+    <u k="LI_ProcessStep">description rationale dateTime processor source</u>
+    <u k="LI_Source">description scaleDenominator sourceReferenceSystem sourceCitation sourceExtent sourceStep</u>
+    <u k="MD_AggregateInformation">aggregateDataSetName aggregateDataSetIdentifier associationType initiativeType</u>
+    <u k="MD_ApplicationSchemaInformation">name schemaLanguage constraintLanguage schemaAscii graphicsFile softwareDevelopmentFile softwareDevelopmentFileFormat</u>
+    <u k="MD_Band">sequenceIdentifier descriptor maxValue minValue units peakResponse bitsPerValue toneGradation scaleFactor offset</u>
+    <u k="MD_BrowseGraphic">fileName fileDescription fileType</u>
+    <u k="MD_CoverageDescription">attributeDescription contentType dimension</u>
+    <u k="MD_DataIdentification">citation abstract purpose credit status pointOfContact resourceMaintenance graphicOverview resourceFormat descriptiveKeywords resourceSpecificUsage resourceConstraints aggregationInfo spatialRepresentationType spatialResolution language characterSet topicCategory environmentDescription extent supplementalInformation</u>
+    <u k="MD_DigitalTransferOptions">unitsOfDistribution transferSize onLine offLine</u>
+    <u k="MD_Dimension">dimensionName dimensionSize resolution</u>
+    <u k="MD_Distribution">distributionFormat distributor transferOptions</u>
+    <u k="MD_Distributor">distributorContact distributionOrderProcess distributorFormat distributorTransferOptions</u>
+    <u k="MD_ExtendedElementInformation">name shortName domainCode definition obligation condition dataType maximumOccurrence domainValue parentEntity rule rationale source</u>
+    <u k="MD_FeatureCatalogueDescription">complianceCode language includedWithDataset featureTypes featureCatalogueCitation</u>
+    <u k="MD_Format">name version amendmentNumber specification fileDecompressionTechnique formatDistributor</u>
+    <u k="MD_GeometricObjects">geometricObjectType geometricObjectCount</u>
+    <u k="MD_Georectified">numberOfDimensions axisDimensionProperties cellGeometry transformationParameterAvailability checkPointAvailability checkPointDescription cornerPoints centerPoint pointInPixel transformationDimensionDescription transformationDimensionMapping</u>
+    <u k="MD_Georeferenceable">numberOfDimensions axisDimensionProperties cellGeometry transformationParameterAvailability controlPointAvailability orientationParameterAvailability orientationParameterDescription georeferencedParameters parameterCitation</u>
+    <u k="MD_GridSpatialRepresentation">numberOfDimensions axisDimensionProperties cellGeometry transformationParameterAvailability</u>
+    <u k="MD_Identifier">authority code</u>
+    <u k="MD_ImageDescription">attributeDescription contentType dimension illuminationElevationAngle illuminationAzimuthAngle imagingCondition imageQualityCode cloudCoverPercentage processingLevelCode compressionGenerationQuantity triangulationIndicator radiometricCalibrationDataAvailability cameraCalibrationInformationAvailability filmDistortionInformationAvailability lensDistortionInformationAvailability</u>
+    <u k="MD_Keywords">keyword type thesaurusName</u>
+    <u k="MD_LegalConstraints">useLimitation accessConstraints useConstraints otherConstraints</u>
+    <u k="MD_MaintenanceInformation">maintenanceAndUpdateFrequency dateOfNextUpdate userDefinedMaintenanceFrequency updateScope updateScopeDescription maintenanceNote contact</u>
+    <u k="MD_Medium">name density densityUnits volumes mediumFormat mediumNote</u>
+    <u k="MD_Metadata">fileIdentifier language characterSet parentIdentifier hierarchyLevel hierarchyLevelName contact dateStamp metadataStandardName metadataStandardVersion dataSetURI locale spatialRepresentationInfo referenceSystemInfo metadataExtensionInfo identificationInfo contentInfo distributionInfo dataQualityInfo portrayalCatalogueInfo metadataConstraints applicationSchemaInfo metadataMaintenance series describes propertyType featureType featureAttribute</u>
+    <u k="MD_MetadataExtensionInformation">extensionOnLineResource extendedElementInformation</u>
+    <u k="MD_RangeDimension">sequenceIdentifier descriptor</u>
+    <u k="MD_SecurityConstraints">useLimitation classification userNote classificationSystem handlingDescription</u>
+    <u k="MD_ServiceIdentification">citation abstract purpose credit status pointOfContact resourceMaintenance graphicOverview resourceFormat descriptiveKeywords resourceSpecificUsage resourceConstraints aggregationInfo</u>
+    <u k="MD_StandardOrderProcess">fees plannedAvailableDateTime orderingInstructions turnaround</u>
+    <u k="MD_Usage">specificUsage usageDateTime userDeterminedLimitations userContactInfo</u>
+    <u k="MD_VectorSpatialRepresentation">topologyLevel geometricObjects</u>
+    <u k="PT_Locale">languageCode country characterEncoding</u>
+    <u k="RS_Identifier">authority code codeSpace version</u>
+  </xsl:variable>
+</xsl:stylesheet>

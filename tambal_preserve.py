@@ -5,8 +5,10 @@ virtualenv GeoNode tanpa Docker). Skrip pendamping tambal-geonode-preserve.sh me
     python tambal_preserve.py cek              # status kedua tambalan, tidak mengubah apa pun
     python tambal_preserve.py tambal           # pasang tambalan GeoMDB (preserve)
     python tambal_preserve.py tambal-unggah    # pasang tambalan unggah metadata (beserta tambalan GeoMDB)
+    python tambal_preserve.py tambal-mdb       # pasang tambalan CSW ISO 19115-3 (MDB)
     python tambal_preserve.py pulihkan-unggah  # lepas tambalan unggah metadata; tambalan GeoMDB tetap
-    python tambal_preserve.py pulihkan         # kembalikan kode asli GeoNode (lepas keduanya)
+    python tambal_preserve.py pulihkan-mdb     # lepas tambalan CSW ISO 19115-3
+    python tambal_preserve.py pulihkan         # kembalikan kode asli GeoNode (lepas semua tambalan)
 
 1. Tambalan GeoMDB (preserve), GeoNode 4.2.5 s.d. master: geonode/catalogue/models.py menyimpan hasil
    etree.tostring() — bytes — ke kolom teks metadata_xml untuk record ber-preserve, sehingga isinya menjadi
@@ -17,6 +19,13 @@ virtualenv GeoNode tanpa Docker). Skrip pendamping tambal-geonode-preserve.sh me
    di sebelah skrip ini, atau jalur di variabel GEOMDB_MODUL) beserta baris pemanggilnya, bertanda "# geomdb-unggah".
    XML ISO yang diunggah lewat UI GeoNode otomatis dipertahankan (preserve) dan dirapikan; lihat docstring modul itu.
 
+3. Tambalan CSW ISO 19115-3 (MDB), GeoNode 5.x (pycsw 3): memasang geonode/catalogue/geomdb_mdb.py (dari
+   geomdb_mdb.py / variabel GEOMDB_MDB_MODUL) dan folder geonode/catalogue/geomdb_xslt/ (dari folder xslt-mdb /
+   variabel GEOMDB_XSLT) beserta satu baris di catalogue/views.py, bertanda "# geomdb-mdb". CSW lalu bisa menyajikan
+   outputSchema http://standards.iso.org/iso/19115/-3/mdb/2.0, hasil konversi XSLT seperti GeoNetwork. Butuh paket
+   saxonche (Saxon-HE, XSLT 2.0): dipasang lewat pip bila belum ada (perlu internet), lalu diuji di proses terpisah
+   sebelum kode GeoNode diubah; bila tidak berfungsi, tidak ada yang diubah.
+
 Kode keluar: 0 berhasil / sudah sesuai · 1 galat · 2 kode tidak dikenali, tidak diubah · 3 tambalan GeoMDB belum
 terpasang (hanya pada cek)
 """
@@ -24,6 +33,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -38,6 +48,16 @@ CIRI = ("metadata_uploaded_preserve", "metadata_xml=md_doc")
 TANDA = "# geomdb-unggah"
 MODUL = "geomdb_unggah.py"
 IMPOR = "from geonode.catalogue import geomdb_unggah"
+
+TANDA_MDB = "# geomdb-mdb"
+MODUL_MDB = "geomdb_mdb.py"
+FOLDER_MDB = "geomdb_xslt"
+CADANGAN_MDB = ".geomdb-mdb-asli"
+IMPOR_MDB = "from geonode.catalogue import geomdb_mdb"
+SAXONCHE = "saxonche==13.1.1"
+# Penanda "saxonche dipasang oleh penambal ini" disimpan di lingkungan Python (sys.prefix), bukan di folder kode:
+# kontainer GeoNode sering berbagi kode (volume) tetapi masing-masing punya venv sendiri.
+PENANDA_SAXONCHE = "geomdb-saxonche-dipasang.txt"
 
 
 def lokasi():
@@ -134,13 +154,13 @@ class Bagian:
     """Satu perubahan di satu berkas GeoNode: `jangkar` (baris asli yang dikenali, urutan prioritas) diganti /
     disisipi `baris` (masing-masing diberi indentasi jangkar dan TANDA)."""
 
-    def __init__(self, berkas, cara, jangkar, baris, pulih=None, ciri=False):
-        self.berkas, self.cara, self.jangkar, self.baris = berkas, cara, jangkar, baris
+    def __init__(self, berkas, cara, jangkar, baris, pulih=None, ciri=False, tanda=TANDA):
+        self.berkas, self.cara, self.jangkar, self.baris, self.tanda = berkas, cara, jangkar, baris, tanda
         self.pulih = pulih or (jangkar[0] if cara == "ganti" else None)
         self.ciri = ciri  # jangkar wajib berada di fungsi pembuat record CSW (lihat CIRI)
 
     def blok(self):
-        return [b + "  " + TANDA for b in self.baris]
+        return [b + "  " + self.tanda for b in self.baris]
 
     def cari_blok(self, baris):
         """Indeks awal blok sisipan yang utuh dan berada di tempatnya; None bila tidak ada."""
@@ -217,48 +237,100 @@ BAGIAN_UNGGAH = [
 ]
 
 
-def _sumber_modul():
-    kandidat = [os.environ.get("GEOMDB_MODUL")]
+BAGIAN_MDB = [
+    # profil pycsw iso19115p3 + konversi XSLT, setelah konfigurasi pycsw GeoNode selesai disusun
+    Bagian("catalogue/views.py", "sesudah", ["mdict = config_updater(mdict) if config_updater else mdict"],
+           [IMPOR_MDB, "mdict = geomdb_mdb.atur(mdict)"], tanda=TANDA_MDB),
+]
+
+
+class Paket:
+    """Tambalan yang memasang modul (dan folder data) ke geonode/catalogue/ beserta baris pemanggilnya."""
+
+    def __init__(self, nama, bagian, modul, env_modul, cadangan, folder=None, sumber_folder=None, env_folder=None):
+        self.nama, self.bagian, self.modul, self.env_modul, self.cadangan = nama, bagian, modul, env_modul, cadangan
+        self.folder, self.sumber_folder, self.env_folder = folder, sumber_folder, env_folder
+
+    def tujuan_modul(self):
+        return os.path.join(paket(), "catalogue", self.modul)
+
+    def tujuan_folder(self):
+        return os.path.join(paket(), "catalogue", self.folder) if self.folder else None
+
+
+UNGGAH = Paket("unggah metadata", BAGIAN_UNGGAH, MODUL, "GEOMDB_MODUL", CADANGAN_UNGGAH)
+MDB = Paket("CSW ISO 19115-3", BAGIAN_MDB, MODUL_MDB, "GEOMDB_MDB_MODUL", CADANGAN_MDB,
+            folder=FOLDER_MDB, sumber_folder="xslt-mdb", env_folder="GEOMDB_XSLT")
+
+
+def _cari(env, nama, cek):
+    """Berkas/folder sumber: variabel lingkungan `env`, di sebelah skrip ini, atau di folder kerja."""
+    kandidat = [os.environ.get(env)]
     if globals().get("__file__"):
-        kandidat.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), MODUL))
-    kandidat.append(os.path.join(os.getcwd(), MODUL))
-    return next((k for k in kandidat if k and os.path.isfile(k)), None)
+        kandidat.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), nama))
+    kandidat.append(os.path.join(os.getcwd(), nama))
+    return next((k for k in kandidat if k and cek(k)), None)
 
 
-def _berkas_unggah():
-    """{jalur: daftar baris} untuk semua berkas yang disentuh tambalan unggah (berkas yang tidak ada: None)."""
-    akar = paket()
-    hasil = {}
-    for b in BAGIAN_UNGGAH:
-        jalur = os.path.join(akar, *b.berkas.split("/"))
-        if jalur not in hasil:
-            hasil[jalur] = _baca(jalur).splitlines(True) if os.path.isfile(jalur) else None
-    return hasil
+def _sumber_modul(pk=UNGGAH):
+    return _cari(pk.env_modul, pk.modul, os.path.isfile)
+
+
+def _sumber_folder(pk):
+    return _cari(pk.env_folder, pk.sumber_folder, os.path.isdir) if pk.folder else None
+
+
+def _isi_folder(akar):
+    """{jalur relatif: isi} semua berkas di folder (tanpa __pycache__)."""
+    isi = {}
+    for d, sub, berkas in os.walk(akar):
+        sub[:] = [x for x in sub if x != "__pycache__"]
+        for b in berkas:
+            jalur = os.path.join(d, b)
+            with open(jalur, "rb") as fh:
+                isi[os.path.relpath(jalur, akar).replace(os.sep, "/")] = fh.read()
+    return isi
 
 
 def _jalur(b):
     return os.path.join(paket(), *b.berkas.split("/"))
 
 
-def keadaan_unggah():
-    """([(bagian, keadaan)], keadaan modul: belum|sudah|beda)."""
-    berkas = _berkas_unggah()
-    bagian = [(b, "tidak-ada" if berkas[_jalur(b)] is None else b.keadaan(berkas[_jalur(b)])) for b in BAGIAN_UNGGAH]
-    tujuan = os.path.join(paket(), "catalogue", MODUL)
-    sumber = _sumber_modul()
-    if not os.path.isfile(tujuan):
+def _berkas(pk):
+    """{jalur: daftar baris} untuk semua berkas yang disentuh tambalan (berkas yang tidak ada: None)."""
+    hasil = {}
+    for b in pk.bagian:
+        jalur = _jalur(b)
+        if jalur not in hasil:
+            hasil[jalur] = _baca(jalur).splitlines(True) if os.path.isfile(jalur) else None
+    return hasil
+
+
+def keadaan(pk):
+    """([(bagian, keadaan)], keadaan modul + folder: belum|sudah|beda)."""
+    berkas = _berkas(pk)
+    bagian = [(b, "tidak-ada" if berkas[_jalur(b)] is None else b.keadaan(berkas[_jalur(b)])) for b in pk.bagian]
+    sumber, sumber_folder = _sumber_modul(pk), _sumber_folder(pk)
+    tujuan, tujuan_folder = pk.tujuan_modul(), pk.tujuan_folder()
+    if not os.path.isfile(tujuan) or (tujuan_folder and not os.path.isdir(tujuan_folder)):
         modul = "belum"
-    elif sumber and _baca(sumber) != _baca(tujuan):
+    elif (sumber and _baca(sumber) != _baca(tujuan)) or (
+            sumber_folder and _isi_folder(sumber_folder) != _isi_folder(tujuan_folder)):
         modul = "beda"
     else:
         modul = "sudah"
     return bagian, modul
 
 
-def ringkasan_unggah(bagian, modul):
+def keadaan_unggah():
+    return keadaan(UNGGAH)
+
+
+def ringkasan(pk, bagian, modul):
     nilai = {k for _, k in bagian}
     if nilai == {"sudah"}:
-        return "SUDAH ditambal" + (" (modul geomdb_unggah.py perlu diperbarui)" if modul != "sudah" else "") + "."
+        return "SUDAH ditambal" + (" (%s perlu diperbarui)" % " / ".join(filter(None, [pk.modul, pk.folder]))
+                                   if modul != "sudah" else "") + "."
     if nilai == {"belum"}:
         return "BELUM ditambal."
     if "tidak-ada" in nilai and nilai <= {"tidak-ada", "belum"}:
@@ -266,6 +338,10 @@ def ringkasan_unggah(bagian, modul):
             sorted({b.berkas for b, k in bagian if k == "tidak-ada"}))
     rinci = ", ".join("%s=%s" % (b.berkas, k) for b, k in bagian)
     return "SEBAGIAN / tidak dikenali (%s)." % rinci
+
+
+def ringkasan_unggah(bagian, modul):
+    return ringkasan(UNGGAH, bagian, modul)
 
 
 def _simpan_semua(perubahan, cadangan):
@@ -283,29 +359,79 @@ def _simpan_semua(perubahan, cadangan):
         raise
 
 
-def tambal_unggah():
-    sumber = _sumber_modul()
+def _salin_folder(sumber, tujuan):
+    """Ganti folder tujuan dengan salinan sumber (izin baca untuk semua: worker GeoNode bisa bukan root)."""
+    sementara = tempfile.mkdtemp(dir=os.path.dirname(tujuan), prefix=".tambal-")
+    try:
+        for rel, isi in _isi_folder(sumber).items():
+            jalur = os.path.join(sementara, *rel.split("/"))
+            os.makedirs(os.path.dirname(jalur), exist_ok=True)
+            with open(jalur, "wb") as fh:
+                fh.write(isi)
+            os.chmod(jalur, 0o644)
+        for d, _, _ in os.walk(sementara):
+            os.chmod(d, 0o755)
+        if os.path.isdir(tujuan):
+            shutil.rmtree(tujuan)
+        os.replace(sementara, tujuan)
+    except Exception:
+        shutil.rmtree(sementara, ignore_errors=True)
+        raise
+
+
+def _hapus_modul(pk):
+    """Hapus modul, folder & .pyc-nya. Kembalian: daftar jalur yang dihapus."""
+    dihapus = []
+    tujuan = pk.tujuan_modul()
+    if os.path.isfile(tujuan):
+        os.remove(tujuan)
+        dihapus.append(tujuan)
+    cache = os.path.join(os.path.dirname(tujuan), "__pycache__")
+    for nama in os.listdir(cache) if os.path.isdir(cache) else ():
+        if nama.startswith(pk.modul[:-3] + "."):  # geomdb_unggah.cpython-312.pyc dst.
+            os.remove(os.path.join(cache, nama))
+    if pk.folder and os.path.isdir(pk.tujuan_folder()):
+        shutil.rmtree(pk.tujuan_folder())
+        dihapus.append(pk.tujuan_folder())
+    return dihapus
+
+
+def pasang(pk):
+    if pk is MDB and not ada_profil_mdb():
+        print("Tidak bisa dipasang: pycsw di GeoNode ini belum punya profil iso19115p3 (butuh GeoNode 5.x / pycsw 3).")
+        return 2
+    sumber, sumber_folder = _sumber_modul(pk), _sumber_folder(pk)
     if not sumber:
-        print("GALAT: %s tidak ditemukan (letakkan di sebelah skrip ini atau isi variabel GEOMDB_MODUL)." % MODUL)
+        print("GALAT: %s tidak ditemukan (letakkan di sebelah skrip ini atau isi variabel %s)." % (pk.modul, pk.env_modul))
         return 1
-    bagian, modul = keadaan_unggah()
+    if pk.folder and not sumber_folder:
+        print("GALAT: folder %s tidak ditemukan (letakkan di sebelah skrip ini atau isi variabel %s)."
+              % (pk.sumber_folder, pk.env_folder))
+        return 1
+    bagian, modul = keadaan(pk)
     asing = [(b, k) for b, k in bagian if k not in ("sudah", "belum")]
     if asing:
-        print("Tambalan unggah %s Tidak ada yang diubah." % ringkasan_unggah(bagian, modul))
+        print("Tambalan %s %s Tidak ada yang diubah." % (pk.nama, ringkasan(pk, bagian, modul)))
         return 2
-    tujuan = os.path.join(paket(), "catalogue", MODUL)
+    saxonche_baru = False
+    if pk is MDB:
+        kode, saxonche_baru = prasyarat_mdb(sumber_folder)
+        if kode:
+            return kode
+    tujuan, tujuan_folder = pk.tujuan_modul(), pk.tujuan_folder()
+    baru_dibuat = not os.path.isfile(tujuan)
+    if saxonche_baru:
+        with open(os.path.join(sys.prefix, PENANDA_SAXONCHE), "w", encoding="utf-8") as fh:
+            fh.write("saxonche dipasang oleh tambal_preserve.py (tambal-mdb); dilepas lagi oleh pulihkan-mdb\n")
     if modul != "sudah":  # modul dulu: baris yang dipasang sesudahnya mengimpornya
-        baru_dibuat = not os.path.isfile(tujuan)
+        if tujuan_folder:
+            _salin_folder(sumber_folder, tujuan_folder)
         _tulis(tujuan, _baca(sumber))
-        if all(k == "sudah" for _, k in bagian):
-            print("Diperbarui: %s" % tujuan)
-            return 0
-    elif all(k == "sudah" for _, k in bagian):
-        print("Tambalan unggah sudah terpasang - tidak ada yang diubah.")
+    if all(k == "sudah" for _, k in bagian):
+        print("Diperbarui: %s" % ", ".join(filter(None, [tujuan, tujuan_folder])) if modul != "sudah"
+              else "Tambalan %s sudah terpasang - tidak ada yang diubah." % pk.nama)
         return 0
-    else:
-        baru_dibuat = False
-    berkas = _berkas_unggah()
+    berkas = _berkas(pk)
     perubahan = {}
     for b, k in bagian:
         if k == "belum":
@@ -313,24 +439,25 @@ def tambal_unggah():
             berkas[jalur] = b.pasang(berkas[jalur])
             perubahan[jalur] = (_baca(jalur), "".join(berkas[jalur]))
     try:
-        _simpan_semua(perubahan, CADANGAN_UNGGAH)
+        _simpan_semua(perubahan, pk.cadangan)
     except Exception:
         if baru_dibuat:
-            os.remove(tujuan)
+            _hapus_modul(pk)
         raise
-    bagian, modul = keadaan_unggah()
+    bagian, modul = keadaan(pk)
     if any(k != "sudah" for _, k in bagian) or modul != "sudah":
-        print("Verifikasi gagal: %s" % ringkasan_unggah(bagian, modul))
+        print("Verifikasi gagal: %s" % ringkasan(pk, bagian, modul))
         return 1
-    print("Ditambal (unggah metadata): %s" % ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan)))
-    print("Modul: %s. Asli dicadangkan sebagai *%s" % (tujuan, CADANGAN_UNGGAH))
+    print("Ditambal (%s): %s" % (pk.nama, ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan))))
+    print("Modul: %s%s. Asli dicadangkan sebagai *%s" % (
+        tujuan, " + folder %s" % tujuan_folder if tujuan_folder else "", pk.cadangan))
     return 0
 
 
-def lepas_unggah(pulih_katalog=BARU):
+def lepas(pk, pulih_katalog=BARU):
     """Lepas bagian yang terpasang. Kembalian: (kode keluar, ada perubahan)."""
-    bagian, _ = keadaan_unggah()
-    berkas = _berkas_unggah()
+    bagian, _ = keadaan(pk)
+    berkas = _berkas(pk)
     perubahan = {}
     for b, k in bagian:
         if k == "sudah":
@@ -338,24 +465,102 @@ def lepas_unggah(pulih_katalog=BARU):
             berkas[jalur] = b.lepas(berkas[jalur], pulih_katalog if b is BAGIAN_UNGGAH[0] else None)
             perubahan.setdefault(jalur, [_baca(jalur), None])[1] = "".join(berkas[jalur])
     _simpan_semua({j: tuple(v) for j, v in perubahan.items()}, None)
-    sisa, _ = keadaan_unggah()
-    tujuan = os.path.join(paket(), "catalogue", MODUL)
-    if os.path.isfile(tujuan) and not any(k == "sudah" for _, k in sisa):  # tak ada lagi yang mengimpornya
-        os.remove(tujuan)
-        perubahan.setdefault(tujuan, None)
-        cache = os.path.join(os.path.dirname(tujuan), "__pycache__")
-        for nama in os.listdir(cache) if os.path.isdir(cache) else ():
-            if nama.startswith(MODUL[:-3] + "."):  # geomdb_unggah.cpython-312.pyc dst.
-                os.remove(os.path.join(cache, nama))
+    sisa, _ = keadaan(pk)
+    if not any(k == "sudah" for _, k in sisa):  # tak ada lagi yang mengimpornya
+        for jalur in _hapus_modul(pk):
+            perubahan.setdefault(jalur, None)
+        penanda = os.path.join(sys.prefix, PENANDA_SAXONCHE)
+        if pk is MDB and os.path.isfile(penanda):
+            hasil = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "saxonche"],
+                                   capture_output=True, text=True)
+            if hasil.returncode:
+                print("Paket saxonche gagal dilepas (dibiarkan): %s" % (hasil.stderr or hasil.stdout).strip()[-300:])
+            else:
+                os.remove(penanda)
+                print("Paket saxonche (dipasang oleh tambalan ini) dilepas.")
     if perubahan:
-        print("Dilepas (unggah metadata): %s" % ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan)))
+        print("Dilepas (%s): %s" % (pk.nama, ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan))))
     elif not any(k == "tidak-dikenali" for _, k in sisa):
-        print("Tambalan unggah tidak terpasang - tidak ada yang dilepas.")
+        print("Tambalan %s tidak terpasang - tidak ada yang dilepas." % pk.nama)
     asing = [(b, k) for b, k in sisa if k == "tidak-dikenali"]
     if asing:
         print("Tidak dikenali, dibiarkan: %s" % ", ".join(b.berkas for b, _ in asing))
         return 2, bool(perubahan)
     return 0, bool(perubahan)
+
+
+def tambal_unggah():
+    return pasang(UNGGAH)
+
+
+def lepas_unggah(pulih_katalog=BARU):
+    return lepas(UNGGAH, pulih_katalog)
+
+
+# ── Tambalan CSW ISO 19115-3: prasyarat ──────────────────────────────────────────────────────────────────────────
+
+# Dijalankan di proses terpisah: pustaka native saxonche yang tidak cocok dengan CPU/OS bisa mematikan proses
+# (mis. illegal instruction) — lebih baik penambalnya yang tahu daripada worker GeoNode yang mati.
+UJI_SAXON = r'''
+import sys
+from saxonche import PySaxonProcessor
+p = PySaxonProcessor(license=False)
+x = p.new_xslt30_processor().compile_stylesheet(stylesheet_file=sys.argv[1])
+gmd = ('<gmd:MD_Metadata xmlns:gmd="http://www.isotc211.org/2005/gmd" xmlns:gco="http://www.isotc211.org/2005/gco">'
+       '<gmd:fileIdentifier><gco:CharacterString>uji-geomdb</gco:CharacterString></gmd:fileIdentifier>'
+       '<gmd:dateStamp><gco:DateTime>2026-01-01T00:00:00</gco:DateTime></gmd:dateStamp></gmd:MD_Metadata>')
+h = x.transform_to_string(xdm_node=p.parse_xml(xml_text=gmd))
+ok = "http://standards.iso.org/iso/19115/-3/mdb/2.0" in h and "uji-geomdb" in h
+print(p.version)
+sys.exit(0 if ok else 3)
+'''
+
+
+def _uji_saxon(xsl):
+    try:
+        hasil = subprocess.run([sys.executable, "-c", UJI_SAXON, xsl], capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, "uji Saxon melebihi 300 detik"
+    if hasil.returncode == 0:
+        return True, hasil.stdout.strip()
+    if hasil.returncode < 0:
+        return False, "proses uji Saxon mati oleh sinyal %d (CPU/OS tidak didukung pustaka native saxonche?)" % (
+            -hasil.returncode)
+    return False, (hasil.stderr or hasil.stdout).strip()[-500:]
+
+
+def ada_profil_mdb():
+    try:
+        return importlib.util.find_spec("pycsw.plugins.profiles.iso19115p3.iso19115p3") is not None
+    except ImportError:
+        return False
+
+
+def prasyarat_mdb(sumber_folder):
+    """saxonche terpasang & berfungsi. Kembalian: (kode keluar, saxonche baru dipasang)."""
+    xsl = os.path.join(sumber_folder, "geomdb-ke-mdb.xsl")
+    baru = False
+    if importlib.util.find_spec("saxonche") is None:
+        print("Memasang %s (Saxon-HE, pemroses XSLT 2.0; unduhan sekitar 40 MB) ..." % SAXONCHE)
+        hasil = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
+                                "--disable-pip-version-check", SAXONCHE], capture_output=True, text=True)
+        if hasil.returncode:
+            print("GALAT: pip gagal memasang %s:\n%s" % (SAXONCHE, (hasil.stderr or hasil.stdout).strip()[-800:]))
+            print("Server tanpa internet: unduh wheel-nya di komputer lain (pip download %s --only-binary=:all: "
+                  "--platform manylinux_2_24_x86_64 --python-version <versi python GeoNode>), salin ke kontainer, "
+                  "lalu pip install berkas .whl itu dan ulangi penambalan." % SAXONCHE)
+            return 1, False
+        importlib.invalidate_caches()
+        baru = True
+    ok, info = _uji_saxon(xsl)
+    if not ok:
+        print("GALAT: Saxon tidak berfungsi di sini: %s" % info)
+        if baru:
+            subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "saxonche"], capture_output=True)
+        print("Tambalan CSW ISO 19115-3 tidak dipasang; tidak ada kode GeoNode yang diubah.")
+        return 1, False
+    print("Saxon berfungsi: %s" % info)
+    return 0, baru
 
 
 def main(aksi):
@@ -370,12 +575,25 @@ def main(aksi):
             "sudah-unggah": "SUDAH ditambal (bagian dari tambalan unggah).",
             "tidak-dikenali": "Kode tidak dikenali (mungkin GeoNode sudah memperbaikinya) - tidak perlu/tidak bisa "
                               "ditambal otomatis."}[st])
-        print("Tambalan unggah metadata: " + ringkasan_unggah(*keadaan_unggah()))
+        print("Tambalan unggah metadata: " + ringkasan(UNGGAH, *keadaan(UNGGAH)))
+        bagian, modul = keadaan(MDB)
+        if not ada_profil_mdb() and not any(k == "sudah" for _, k in bagian):
+            print("Tambalan CSW ISO 19115-3 (MDB): tidak bisa dipasang: butuh GeoNode 5.x (pycsw 3).")
+        else:
+            saxonche = "terpasang" if importlib.util.find_spec("saxonche") else "TIDAK terpasang"
+            print("Tambalan CSW ISO 19115-3 (MDB): %s Paket saxonche %s." % (ringkasan(MDB, bagian, modul), saxonche))
         return {"belum": 3, "sudah": 0, "sudah-unggah": 0, "tidak-dikenali": 2}[st]
     if aksi == "tambal-unggah":
-        return tambal_unggah()
+        return pasang(UNGGAH)
     if aksi == "pulihkan-unggah":
-        return lepas_unggah()[0]
+        return lepas(UNGGAH)[0]
+    if aksi == "tambal-mdb":
+        return pasang(MDB)
+    if aksi == "pulihkan-mdb":
+        return lepas(MDB)[0]
+    if aksi == "pulihkan":
+        kode_mdb, _ = lepas(MDB) if any(k == "sudah" for _, k in keadaan(MDB)[0]) or os.path.isfile(
+            MDB.tujuan_modul()) else (0, False)
     if st == "tidak-dikenali":
         print("Kode tidak dikenali - tidak diubah.")
         return 2
@@ -392,7 +610,7 @@ def main(aksi):
         print("Ditambal. Asli dicadangkan di %s" % (jalur + CADANGAN))
         return 0
     if aksi == "pulihkan":
-        kode, berubah = lepas_unggah(pulih_katalog=LAMA) if st == "sudah-unggah" else (0, False)
+        kode, berubah = lepas(UNGGAH, pulih_katalog=LAMA) if st == "sudah-unggah" else (0, False)
         st = status(_baca(jalur))
         if st == "sudah":
             # Balikkan baris yang diubah (bukan menyalin cadangan: cadangan bisa berasal dari versi GeoNode lama)
@@ -407,10 +625,10 @@ def main(aksi):
         else:
             print("Belum ditambal - tidak ada yang dikembalikan.")
         # sisa tambalan unggah di berkas lain (bila catalogue/models.py tak lagi memuatnya)
-        if any(k == "sudah" for _, k in keadaan_unggah()[0]):
-            kode, _ = lepas_unggah()
-        return kode
-    print("pemakaian: python tambal_preserve.py cek|tambal|tambal-unggah|pulihkan-unggah|pulihkan")
+        if any(k == "sudah" for _, k in keadaan(UNGGAH)[0]):
+            kode, _ = lepas(UNGGAH)
+        return kode or kode_mdb
+    print("pemakaian: python tambal_preserve.py cek|tambal|tambal-unggah|tambal-mdb|pulihkan-unggah|pulihkan-mdb|pulihkan")
     return 1
 
 
