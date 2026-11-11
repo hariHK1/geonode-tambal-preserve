@@ -349,6 +349,8 @@ def lepas_unggah(pulih_katalog=BARU):
                 os.remove(os.path.join(cache, nama))
     if perubahan:
         print("Dilepas (unggah metadata): %s" % ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan)))
+    elif not any(k == "tidak-dikenali" for _, k in sisa):
+        print("Tambalan unggah tidak terpasang - tidak ada yang dilepas.")
     asing = [(b, k) for b, k in sisa if k == "tidak-dikenali"]
     if asing:
         print("Tidak dikenali, dibiarkan: %s" % ", ".join(b.berkas for b, _ in asing))
