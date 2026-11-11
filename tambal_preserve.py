@@ -343,6 +343,10 @@ def lepas_unggah(pulih_katalog=BARU):
     if os.path.isfile(tujuan) and not any(k == "sudah" for _, k in sisa):  # tak ada lagi yang mengimpornya
         os.remove(tujuan)
         perubahan.setdefault(tujuan, None)
+        cache = os.path.join(os.path.dirname(tujuan), "__pycache__")
+        for nama in os.listdir(cache) if os.path.isdir(cache) else ():
+            if nama.startswith(MODUL[:-3] + "."):  # geomdb_unggah.cpython-312.pyc dst.
+                os.remove(os.path.join(cache, nama))
     if perubahan:
         print("Dilepas (unggah metadata): %s" % ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan)))
     asing = [(b, k) for b, k in sisa if k == "tidak-dikenali"]
