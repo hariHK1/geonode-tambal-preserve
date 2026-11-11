@@ -108,6 +108,8 @@ Setelah ditambal:
 - **XML dirapikan sebelum disajikan CSW**:
   - `fileIdentifier` diganti UUID dataset di GeoNode;
   - deklarasi `<?xml … encoding="UTF-8"?>` aman (sebelumnya membuat unggahan ber-preserve gagal);
+  - lineage yang ditaruh di blok `dataQualityInfo` terpisah (plugin GeoMDB 1.0.5) dipindah ke blok pertama bila
+    cakupannya sama, karena tampilan XSL GeoNode, OWSLib, dan banyak harvester hanya membaca blok pertama;
   - tautan GeoNode ditambahkan bila pasangan URL + protokolnya belum ada di XML: halaman dataset, unduhan,
     WMS/WFS/WCS. Tautan yang sudah ditulis di XML tetap.
 - **"Data Quality" di halaman GeoNode terisi**: lineage, dari blok `dataQualityInfo` mana pun (GeoNode hanya membaca

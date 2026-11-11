@@ -8,6 +8,7 @@ baris-baris bertanda ``# geomdb-unggah`` di kode GeoNode:
                                                          apa adanya (metadata_uploaded_preserve).
 - catalogue/models.py            xml_preserve()         XML yang dipertahankan dirapikan sebelum disajikan CSW:
                                                          fileIdentifier = UUID dataset, deklarasi <?xml?> dibuang,
+                                                         lineage disatukan ke blok kualitas pertama,
                                                          tautan GeoNode (halaman, unduhan, WMS/WFS/WCS) ditambahkan
                                                          bila belum ada.
 - layers/metadata.py             pernyataan_kualitas()  "Data Quality" di halaman GeoNode = lineage (dari blok
@@ -29,7 +30,7 @@ from datetime import date, datetime
 
 from lxml import etree
 
-VERSI = "2"
+VERSI = "3"
 LOGGER = logging.getLogger(__name__)
 
 GMD = "http://www.isotc211.org/2005/gmd"
@@ -265,11 +266,40 @@ def _tambah_tautan(akar, tautan):
     return True
 
 
+def _lingkup(dq):
+    lingkup = dq.find("gmd:scope", NS)
+    return re.sub(r">\s+<", "><", etree.tostring(lingkup, encoding="unicode")) if lingkup is not None else ""
+
+
+def _gabung_kualitas(akar):
+    """Pindahkan lineage ke blok dataQualityInfo PERTAMA bila blok itu belum punya lineage dan cakupannya (scope)
+    sama. Banyak pembaca (XSL metadata GeoNode, OWSLib, harvester) hanya membaca blok pertama, padahal plugin
+    GeoMDB 1.0.5 menaruh laporan kualitas dan lineage di blok terpisah. Isi tidak berubah, hanya letaknya."""
+    blok = [b for b in akar.findall("gmd:dataQualityInfo", NS) if b.find("gmd:DQ_DataQuality", NS) is not None]
+    if len(blok) < 2:
+        return False
+    pertama = blok[0].find("gmd:DQ_DataQuality", NS)
+    if pertama.find("gmd:lineage", NS) is not None:
+        return False
+    for info in blok[1:]:
+        dq = info.find("gmd:DQ_DataQuality", NS)
+        lineage = dq.find("gmd:lineage", NS)
+        if lineage is None or _lingkup(dq) != _lingkup(pertama):
+            continue
+        pertama.append(lineage)  # urutan DQ_DataQuality: scope, report*, lineage
+        if not [a for a in dq if isinstance(a.tag, str) and _lokal(a) != "scope"]:
+            akar.remove(info)  # tinggal scope saja: blok kosong
+        return True
+    return False
+
+
 def rapikan(teks, uuid, tautan=()):
-    """XML yang dipertahankan, siap disajikan CSW: fileIdentifier = uuid, tautan yang belum ada ditambahkan."""
+    """XML yang dipertahankan, siap disajikan CSW: fileIdentifier = uuid, lineage disatukan ke blok kualitas
+    pertama, tautan yang belum ada ditambahkan."""
     akar = _urai(teks)
     if uuid:
         _isi_teks(_anak(akar, "gmd:fileIdentifier"), str(uuid))
+    _gabung_kualitas(akar)
     _tambah_tautan(akar, tautan)
     return _serial(akar)
 
