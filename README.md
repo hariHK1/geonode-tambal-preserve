@@ -175,7 +175,7 @@ Contoh permintaan:
   srv = 2.0; lainnya 1.0); `xsi:schemaLocation` menunjuk `mdb/2.0/mdb.xsd` resmi.
 
 Diuji pada XML buatan GeoNode 5.1.1, XML ber-preserve, ekspor lengkap & minimal geomdb-hub, dan ekspor plugin GeoMDB
-1.0.5 (asli maupun setelah tambalan unggah) dan 1.1.6: semuanya **valid XSD + Schematron ISO 19115-3:2018**, setiap
+1.0.5 (asli maupun setelah tambalan unggah) dan 1.1.0: semuanya **valid XSD + Schematron ISO 19115-3:2018**, setiap
 nilai sumber terbawa, dan jumlah elemen kunci (laporan & hasil kualitas, tahap proses, sumber, tautan, kata kunci,
 format, ekstensi) sama dengan sumbernya. Pengecualiannya disengaja: label peran diganti kode ISO, nama standar menjadi "ISO 19115-3:2018", dan
 pihak tanpa nama dibuang.
