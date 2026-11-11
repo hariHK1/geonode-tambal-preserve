@@ -29,7 +29,7 @@ from datetime import date, datetime
 
 from lxml import etree
 
-VERSI = "1"
+VERSI = "2"
 LOGGER = logging.getLogger(__name__)
 
 GMD = "http://www.isotc211.org/2005/gmd"
@@ -358,7 +358,7 @@ def _ringkas_laporan(el):
         if nilai:
             satuan = _satuan(kuantitatif.find("gmd:valueUnit", NS))
             hasil.append(nilai + (" " + satuan if satuan else ""))
-    return "%s%s: %s" % (jenis, " - " + nama if nama else "", "; ".join(hasil) or "hasil tidak dicantumkan")
+    return "%s%s: %s" % (jenis, " – " + nama if nama else "", "; ".join(hasil) or "hasil tidak dicantumkan")
 
 
 def pernyataan_kualitas(exml, lineage=None):
@@ -373,7 +373,8 @@ def pernyataan_kualitas(exml, lineage=None):
                    for el in r if isinstance(el.tag, str)]
         bagian = [_polos(riwayat)] if riwayat else []
         if laporan:
-            bagian.append("Laporan kualitas data:\n" + "\n".join("- " + _polos(b) for b in laporan))
+            # bernomor: tetap terbaca walau baris baru dilebur (View Metadata GeoNode menampilkannya sebagai HTML)
+            bagian.append("Laporan kualitas data:\n" + "\n".join("%d. %s" % (i, _polos(t)) for i, t in enumerate(laporan, 1)))
         teks = "\n\n".join(bagian)
         if not teks:
             return lineage

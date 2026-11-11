@@ -112,7 +112,7 @@ Setelah ditambal:
     WMS/WFS/WCS. Tautan yang sudah ditulis di XML tetap.
 - **"Data Quality" di halaman GeoNode terisi**: lineage, dari blok `dataQualityInfo` mana pun (GeoNode hanya membaca
   blok pertama), ditambah ringkasan laporan kualitas, misalnya
-  `Konsistensi domain - Kesesuaian format kode wilayah: lulus (49 dari 49 …)`.
+  `1. Konsistensi domain – Kesesuaian format kode wilayah: lulus (49 dari 49 …)`.
 - **Perubahan lewat form metadata GeoNode ikut ditulis ke XML.** Judul, abstrak, kata kunci, kategori, dan tanggal
   (beserta jenisnya) yang **diubah** di form ditulis ke XML yang dipertahankan, `dateStamp` diperbarui, lalu record
   CSW diperbarui. Field lain (kontak, wilayah, lisensi, …) tidak disinkronkan: ubah di GeoMDB lalu unggah ulang XML.
