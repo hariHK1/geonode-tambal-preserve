@@ -421,7 +421,7 @@ def pasang(pk):
     tujuan, tujuan_folder = pk.tujuan_modul(), pk.tujuan_folder()
     baru_dibuat = not os.path.isfile(tujuan)
     if saxonche_baru:
-        with open(os.path.join(sys.prefix, PENANDA_SAXONCHE), "w", encoding="utf-8") as fh:
+        with open(penanda_saxonche(), "w", encoding="utf-8") as fh:
             fh.write("saxonche dipasang oleh tambal_preserve.py (tambal-mdb); dilepas lagi oleh pulihkan-mdb\n")
     if modul != "sudah":  # modul dulu: baris yang dipasang sesudahnya mengimpornya
         if tujuan_folder:
@@ -466,27 +466,38 @@ def lepas(pk, pulih_katalog=BARU):
             perubahan.setdefault(jalur, [_baca(jalur), None])[1] = "".join(berkas[jalur])
     _simpan_semua({j: tuple(v) for j, v in perubahan.items()}, None)
     sisa, _ = keadaan(pk)
+    saxonche_dilepas = False
     if not any(k == "sudah" for _, k in sisa):  # tak ada lagi yang mengimpornya
         for jalur in _hapus_modul(pk):
             perubahan.setdefault(jalur, None)
-        penanda = os.path.join(sys.prefix, PENANDA_SAXONCHE)
-        if pk is MDB and os.path.isfile(penanda):
-            hasil = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "saxonche"],
-                                   capture_output=True, text=True)
-            if hasil.returncode:
-                print("Paket saxonche gagal dilepas (dibiarkan): %s" % (hasil.stderr or hasil.stdout).strip()[-300:])
-            else:
-                os.remove(penanda)
-                print("Paket saxonche (dipasang oleh tambalan ini) dilepas.")
+        saxonche_dilepas = pk is MDB and lepas_saxonche()
     if perubahan:
         print("Dilepas (%s): %s" % (pk.nama, ", ".join(sorted(os.path.relpath(j, paket()) for j in perubahan))))
-    elif not any(k == "tidak-dikenali" for _, k in sisa):
+    elif not saxonche_dilepas and not any(k == "tidak-dikenali" for _, k in sisa):
         print("Tambalan %s tidak terpasang - tidak ada yang dilepas." % pk.nama)
     asing = [(b, k) for b, k in sisa if k == "tidak-dikenali"]
     if asing:
         print("Tidak dikenali, dibiarkan: %s" % ", ".join(b.berkas for b, _ in asing))
         return 2, bool(perubahan)
     return 0, bool(perubahan)
+
+
+def penanda_saxonche():
+    return os.path.join(sys.prefix, PENANDA_SAXONCHE)
+
+
+def lepas_saxonche():
+    """Lepas saxonche bila dulu dipasang penambal ini di lingkungan Python ini. Kembalian: True bila dilepas."""
+    if not os.path.isfile(penanda_saxonche()):
+        return False
+    hasil = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "saxonche"],
+                           capture_output=True, text=True)
+    if hasil.returncode:
+        print("Paket saxonche gagal dilepas (dibiarkan): %s" % (hasil.stderr or hasil.stdout).strip()[-300:])
+        return False
+    os.remove(penanda_saxonche())
+    print("Paket saxonche (dipasang oleh tambalan ini) dilepas.")
+    return True
 
 
 def tambal_unggah():
@@ -592,8 +603,10 @@ def main(aksi):
     if aksi == "pulihkan-mdb":
         return lepas(MDB)[0]
     if aksi == "pulihkan":
+        # Kontainer yang berbagi kode: tambalannya mungkin sudah dilepas lewat kontainer lain, tetapi saxonche ada
+        # di venv masing-masing — penandanya tetap diperiksa di sini.
         kode_mdb, _ = lepas(MDB) if any(k == "sudah" for _, k in keadaan(MDB)[0]) or os.path.isfile(
-            MDB.tujuan_modul()) else (0, False)
+            MDB.tujuan_modul()) or os.path.isfile(penanda_saxonche()) else (0, False)
     if st == "tidak-dikenali":
         print("Kode tidak dikenali - tidak diubah.")
         return 2
