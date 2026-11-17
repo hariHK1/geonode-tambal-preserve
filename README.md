@@ -3,10 +3,11 @@
 *Patches for GeoNode used with the GeoMDB metadata tools: a one-line fix for a GeoNode bug (4.2.5 → master) where
 `metadata_uploaded_preserve` stores `metadata_xml` as a Python bytes repr, an optional GeoNode 5.x patch that
 makes ISO 19139 XML uploaded through the GeoNode UI be served complete by CSW, and an optional GeoNode 5.x patch that
-makes CSW serve ISO 19115-3:2018 (MDB) like GeoNetwork, converted with GeoNetwork's XSLT on Saxon-HE. Instructions
-below are in Indonesian.*
+makes CSW serve ISO 19115-3:2018 (MDB) like GeoNetwork, converted with GeoNetwork's XSLT on Saxon-HE, plus security
+patches for GeoNode 4.x – 5.1.x (command injection, SSRF, unsafe XML, stored XSS) and Docker hardening for GeoServer.
+Instructions below are in Indonesian.*
 
-Alat untuk **admin server GeoNode**. Ada tiga tambalan:
+Alat untuk **admin server GeoNode**. Ada tiga tambalan metadata dan satu paket [keamanan](#keamanan-menu-812):
 
 | Tambalan | Untuk apa | GeoNode |
 |---|---|---|
@@ -34,27 +35,45 @@ cd geonode-tambal-preserve-main
 | `tambal_preserve.py` | Penambal. Dijalankan di dalam lingkungan Python GeoNode, otomatis lewat skrip di atas, atau langsung untuk GeoNode tanpa Docker. |
 | `geomdb_unggah.py` | Modul tambalan unggah metadata. Dipasang penambal ke `geonode/catalogue/geomdb_unggah.py`. |
 | `geomdb_mdb.py` | Modul tambalan CSW ISO 19115-3. Dipasang ke `geonode/catalogue/geomdb_mdb.py`. |
+| `geomdb_aman.py` | Modul tambalan keamanan. Dipasang ke `geonode/security/geomdb_aman.py`. |
 | `xslt-mdb/` | XSLT konversi ISO 19139 → ISO 19115-3 (GeoNetwork + perbaikan GeoMDB, lihat `xslt-mdb/SUMBER.md`). Dipasang ke `geonode/catalogue/geomdb_xslt/`. |
 
 ## Pemakaian (GeoNode dengan Docker)
 
-Jalankan tanpa argumen untuk memilih dari menu:
+Jalankan tanpa argumen. Menunya **dua tingkat**: pilih **versi GeoNode** dulu (versi yang sedang berjalan
+terdeteksi otomatis sebagai bawaan), lalu muncul hanya tambalan/alat yang **kompatibel** dengan versi itu.
 
 ```bash
 ./tambal-geonode-preserve.sh
 ```
 
 ```
-  1) Cek status
-  2) Tambalan GeoMDB (preserve)
-  3) Tambalan unggah metadata UI GeoNode (butuh GeoNode 5.x, sudah termasuk tambalan GeoMDB)
-  4) Lepas tambalan unggah metadata (tambalan GeoMDB tetap terpasang)
-  5) Pulihkan kode asli GeoNode (lepas semua tambalan)
-  6) Tambalan CSW ISO 19115-3 / MDB (butuh GeoNode 5.x dan internet untuk memasang saxonche)
-  7) Lepas tambalan CSW ISO 19115-3
+Pilih versi GeoNode server:
+  1) GeoNode 4.x
+  2) GeoNode 5.x
 ```
 
-atau langsung dengan perintahnya:
+```
+GeoNode 5.x — tambalan & alat yang kompatibel:      GeoNode 4.x — tambalan & alat yang kompatibel:
+  1) Cek status                                        1) Cek status
+  — Metadata —                                         — Metadata —
+  2) Tambalan GeoMDB (preserve)                        2) Tambalan GeoMDB (preserve)
+  3) Tambalan unggah metadata UI                       — Keamanan —
+  4) Lepas tambalan unggah metadata                    3) Cek celah
+  5) Tambalan CSW ISO 19115-3 / MDB                    4) Pasang tambalan keamanan
+  6) Lepas tambalan CSW ISO 19115-3                    5) Lepas tambalan keamanan
+  — Keamanan —                                         6) Uji keamanan (simulasi serangan)
+  7) Cek celah                                         7) Perketat konfigurasi Docker
+  8) Pasang tambalan keamanan                          8) Kembalikan konfigurasi Docker
+  9) Lepas tambalan keamanan                           — Lainnya —
+ 10) Uji keamanan (simulasi serangan)                  9) Panduan upgrade 4.x -> 5.x
+ 11) Perketat konfigurasi Docker                      10) Pulihkan kode asli GeoNode
+ 12) Kembalikan konfigurasi Docker
+  — Lainnya —          (unggah metadata UI & CSW ISO 19115-3/MDB hanya untuk 5.x,
+ 13) Pulihkan kode asli GeoNode        maka tidak muncul di menu 4.x)
+```
+
+atau langsung dengan perintahnya (sama untuk versi apa pun; perintah 5.x ditolak di 4.x dengan kode 2):
 
 ```bash
 ./tambal-geonode-preserve.sh cek              # status semua kontainer GeoNode, tidak mengubah apa pun
@@ -63,6 +82,12 @@ atau langsung dengan perintahnya:
 ./tambal-geonode-preserve.sh pulihkan-unggah  # lepas tambalan unggah metadata; tambalan GeoMDB tetap
 ./tambal-geonode-preserve.sh tambal-mdb       # tambalan CSW ISO 19115-3 (MDB)
 ./tambal-geonode-preserve.sh pulihkan-mdb     # lepas tambalan CSW ISO 19115-3
+./tambal-geonode-preserve.sh cek-aman         # celah kode GeoNode K1..K4 + versi/konfigurasi GeoServer
+./tambal-geonode-preserve.sh tambal-aman      # tambalan keamanan pada kode yang masih rentan
+./tambal-geonode-preserve.sh pulihkan-aman    # lepas tambalan keamanan
+./tambal-geonode-preserve.sh perketat         # perketat konfigurasi Docker (GeoServer, port, CSRF, pendaftaran)
+./tambal-geonode-preserve.sh kembalikan       # batalkan perketat
+./tambal-geonode-preserve.sh uji-aman         # simulasi serangan K1..K4 ke server ini, lalu dibersihkan
 ./tambal-geonode-preserve.sh pulihkan         # kembalikan kode asli GeoNode (lepas semua tambalan)
 ```
 
@@ -76,10 +101,12 @@ atau langsung dengan perintahnya:
 ```bash
 source /path/ke/virtualenv-geonode/bin/activate
 python tambal_preserve.py cek | tambal | tambal-unggah | tambal-mdb | pulihkan-unggah | pulihkan-mdb | pulihkan
+python tambal_preserve.py cek-aman | tambal-aman | pulihkan-aman
 ```
 
-`geomdb_unggah.py`, `geomdb_mdb.py`, dan folder `xslt-mdb/` harus berada di folder yang sama dengan
-`tambal_preserve.py` (atau isi jalurnya di variabel `GEOMDB_MODUL`, `GEOMDB_MDB_MODUL`, `GEOMDB_XSLT`). Lalu mulai ulang layanan GeoNode dan celery (mis. `systemctl restart uwsgi celery`, sesuaikan
+`geomdb_unggah.py`, `geomdb_mdb.py`, `geomdb_aman.py`, dan folder `xslt-mdb/` harus berada di folder yang sama dengan
+`tambal_preserve.py` (atau isi jalurnya di variabel `GEOMDB_MODUL`, `GEOMDB_MDB_MODUL`, `GEOMDB_AMAN_MODUL`,
+`GEOMDB_XSLT`). Menu 11–12 (konfigurasi Docker) hanya untuk GeoNode dengan Docker. Lalu mulai ulang layanan GeoNode dan celery (mis. `systemctl restart uwsgi celery`, sesuaikan
 dengan server).
 
 ## Tambalan GeoMDB (preserve)
@@ -200,6 +227,150 @@ Catatan:
 - Bagian yang diubah di kode GeoNode bertanda `# geomdb-mdb` (satu baris di `catalogue/views.py` + modul + folder
   XSLT).
 
+## Keamanan (menu 7–12)
+
+Nomor menu di bagian ini mengikuti submenu GeoNode 5.x. Di submenu 4.x: 3 cek, 4 tambal, 5 lepas, 6 uji,
+7 perketat, 8 kembalikan.
+
+### Celah kode GeoNode (menu 7 cek, 8 tambal, 9 lepas)
+
+| | Celah | Rentan | Tambalan GeoMDB (setara perbaikan resmi) |
+|---|---|---|---|
+| **K1** | Injeksi perintah lewat nama layer unggahan (CVE-2026-33050): nama layer di GeoJSON/KML disisipkan ke perintah `ogr2ogr` yang dijalankan shell, sehingga pengguna yang boleh mengunggah bisa menjalankan perintah di server | semua 4.x, 5.0.0 – 5.0.2 (advisory resmi: < 5.1.0) | argumen dikutip (`shlex.quote`) dan `ogr2ogr` dijalankan tanpa shell. Di 4.x yang ditambal paket `importer` |
+| **K2** | SSRF lewat pendaftaran *Remote Service* dan `/proxy` (CVE-2026-39922): server GeoNode bisa disuruh mengambil URL jaringan dalam (database, metadata cloud `169.254.169.254`, layanan internal) | 4.0 – 4.4.x, 5.0.0 – 5.0.2 | URL ditolak bila bukan http(s), memuat userinfo, atau salah satu alamat IP-nya bukan alamat publik. Host GeoServer/GeoNode sendiri tetap boleh lewat `/proxy` |
+| **K3** | XML/SLD unggahan berisi DTD, entitas, XSLT, atau skrip | 4.x – 5.1.0 | XML ditolak bila memuat DOCTYPE, *processing instruction*, XSLT, elemen skrip/iframe/objek, atribut `on*`, atau URL `javascript:` |
+| **K4** | XSS tersimpan di abstrak & isian HTML metadata (CVE-2026-55649): skrip di abstrak dijalankan di peramban pengunjung halaman dataset | 4.x, 5.0.0 – 5.0.2 | abstrak, tujuan, batasan, informasi tambahan, dan pernyataan kualitas data dibersihkan saat disimpan (daftar tag aman; skrip dan atribut berbahaya dibuang). Teks biasa tidak diubah |
+
+- **Hanya kode yang masih rentan yang ditambal.** Bagian yang sudah diperbaiki GeoNode sendiri dilaporkan
+  "aman (sudah diperbaiki di GeoNode versi ini)" dan tidak diubah. Di GeoNode 5.1.1 keempatnya sudah diperbaiki.
+- Bagian yang diubah bertanda `# geomdb-aman`, berkas asli dicadangkan sebagai `*.geomdb-aman-asli`. Bila
+  pemeriksaan setelah menambal gagal, semua berkas dikembalikan.
+- Tambalan ini **bukan pengganti upgrade**. GeoNode 4.x tidak lagi mendapat perbaikan keamanan, dan K1 tidak pernah
+  diperbaiki untuk 4.x. Rencanakan [upgrade ke 5.x](#upgrade-geonode-4x-ke-5x).
+
+### Konfigurasi Docker (menu 11 perketat, 12 kembalikan)
+
+Menu 7 juga memeriksa konfigurasi yang tidak bisa diperbaiki dengan menambal kode. Menu 11 memperbaikinya, dengan
+pertanyaan satu per satu:
+
+- **Image GeoServer** diganti versi bertambal bila versinya terdampak celah GeoServer yang sudah dieksploitasi
+  aktif: RCE CVE-2024-36401 (< 2.23.6, 2.24.0 – 2.24.3, 2.25.0 – 2.25.1), XXE CVE-2025-58360 (≤ 2.25.5,
+  2.26.0 – 2.26.1), dan SQL injection GHSA-mqjf-5f49-2fjh (< 2.27.6, 2.28.0 – 2.28.4, 3.0.0). Target: `2.27.6-latest`
+  (GeoServer < 2.28) atau `2.28.6-latest`. **Folder data GeoServer dicadangkan dulu** ke
+  `<folder compose>/cadangan-geomdb-aman/`. Celah ini hanya tertutup dengan mengganti image: K3 menambal XML
+  unggahan di kode GeoNode, bukan GeoServer, dan port `127.0.0.1` tidak menolong karena `/geoserver/` tetap
+  dilayani nginx. Kunci `PERKETAT_HANYA=image-geoserver` mengganti image GeoServer saja.
+- **Port GeoServer hanya `127.0.0.1`.** Port yang dibuka Docker melewati ufw, jadi GeoServer bisa diakses langsung
+  dari luar tanpa lewat nginx/GeoNode. **Port PostgreSQL** (service `db`) juga diikat ke `127.0.0.1` bila terbuka —
+  basis data cukup diakses antar-kontainer.
+- **CSRF admin GeoServer aktif** (whitelist = host `SITEURL`), **JSONP mati**, **CORS tanpa PUT/DELETE**.
+- **Pendaftaran akun mandiri ditutup** (`ACCOUNT_OPEN_SIGNUP=False`): akun dibuat Walidata/admin. Celah yang butuh
+  login (K1, K3) tidak bisa dipakai orang luar yang mendaftar sendiri.
+- **Image PostgreSQL** (service `db`) diganti image resmi `postgis/postgis:<seri>-<minor PostGIS>-alpine` bila lebih
+  baru — lihat di bawah.
+
+Perubahan ditulis ke berkas tambahan `docker-compose.geomdb-aman.yml` dan baris `COMPOSE_FILE` di `.env`
+(`docker-compose.yml` tidak disunting; `.env` dicadangkan sebagai `.env.geomdb-aman-<tanggal>`). Kontainer lalu
+dibuat ulang, dan tambalan kode yang tadinya terpasang dipasang lagi otomatis. Menu 12 menghapus berkas tambahan dan
+baris itu lalu membuat ulang kontainer. Bila `docker-compose.geomdb-aman.yml` sudah ada, menu 11 tidak menimpanya
+(pengaturan lama bisa hilang tanpa terasa): jalankan menu 12 lalu menu 11 lagi untuk menilai ulang semuanya.
+
+Pertanyaan menu 11 bisa dibatasi untuk pemakaian terskrip, misalnya hanya mengganti image PostgreSQL:
+
+```bash
+PERKETAT_HANYA=image-db ./tambal-geonode-preserve.sh perketat -y
+```
+
+Kunci: `image-geoserver`, `port-geoserver`, `csrf-geoserver`, `port-db`, `image-db`, `ekstensi-db`, `signup`; yang
+tidak disebut dijawab "tidak".
+
+#### PostgreSQL (menu 7 & 11)
+
+Menu 7 **memeriksa versi PostgreSQL** (service `db`): membandingkan minor yang berjalan dengan rilis keamanan terakhir
+(per 2026-11-12: seri 15 → **15.20**, 16 → 16.16, 17 → 17.12, 18 → 18.7; **seri ≤ 14 END-OF-LIFE**). Rilis itu menutup
+52 CVE termasuk **CVE-2026-6460** (RCE terautentikasi, CVSS 8.8) dan **PostGREShell CVE-2026-6471**. Menu 7 juga
+memperingatkan bila **versi ekstensi PostGIS tidak cocok dengan image**: tertinggal (belum di-`UPDATE`) atau justru
+lebih baru (image DB kembali ke versi lama, misalnya sesudah upgrade GeoNode mengganti berkas compose).
+
+Image `geonode/postgis` tidak selalu cepat dirilis ulang (per 15-11-2026: `15-3.5-latest` masih PostgreSQL 15.17).
+Bila image resmi `postgis/postgis` dengan seri PostgreSQL dan minor PostGIS yang sama lebih baru, menu 11 menawarkannya:
+
+- **Hanya bila image sekarang juga Alpine** (`geonode/postgis` berbasis Alpine). Pindah musl ↔ glibc mengubah urutan
+  collation sehingga indeks teks bisa rusak tanpa peringatan; karena itu varian Debian tidak ditawarkan.
+- **Cadangan dulu**: `pg_dumpall` dan salinan volume data (PostgreSQL berhenti sebentar) ke
+  `<folder compose>/cadangan-geomdb-aman/postgres-*`; ruang disk diperiksa lebih dulu.
+- Hanya kontainer `db` yang dibuat ulang (`--no-deps`); django/celery/GeoServer tetap berjalan dan tambalan kode di
+  dalamnya tidak tersentuh. Bila PostgreSQL tidak siap dengan image baru, image dikembalikan otomatis.
+- Sesudahnya **`ALTER EXTENSION … UPDATE`** dijalankan untuk ekstensi `postgis*` yang tertinggal (semua database).
+- Image pengganti disimpan di **`docker-compose.geomdb-pg.yml`** dan **tidak dilepas menu 12**: setelah katalog PostGIS
+  diperbarui, kembali ke image lama tidak didukung. Pemulihan penuh lewat salinan volume di atas.
+- **Hanya untuk instalasi yang sudah berjalan.** Image resmi tidak membawa skrip pembuat database GeoNode
+  (`geonode.sh`) yang dijalankan saat instalasi baru.
+- Sesudah upgrade GeoNode, jalankan menu 7: bila image DB kembali ke versi lama, menu 11 memasangnya lagi.
+
+Diuji di GeoNode 5.1.1 (dua stack): 15.17 → 15.19, PostGIS 3.5.3/3.5.5 → 3.5.7; jumlah baris semua tabel dan geometri
+identik, WMS GetMap dari layer PostGIS menghasilkan gambar yang sama persis, tambalan GeoMDB tetap terpasang. Pada
+salinan basis data, `amcheck` memeriksa 787 indeks B-tree tanpa galat. Skenario "image kembali ke versi lama"
+terdeteksi menu 7 dan dipulihkan menu 11.
+
+Diuji pada GeoNode 4.4.4 dan 5.1.1 (Docker). Di 4.4.4, nama layer berisi perintah benar-benar dijalankan sebelum
+ditambal. Setelah menu 8 dan 11, ke-14 uji lulus: perintah sisipan tidak dijalankan, unggahan biasa tetap terbit,
+`/proxy` dan pendaftaran layanan ke alamat dalam ditolak, WMS tetap jalan, XML ber-DOCTYPE/XSLT ditolak, XML metadata
+biasa diterima, skrip di abstrak dibuang, teks biasa tidak berubah. Di 5.1.1 menu 11 menutup JSONP, preflight CORS
+PUT, dan pendaftaran mandiri, sementara WMS dan unggahan tetap jalan. Menu 9 dan 12 mengembalikan berkas dan
+konfigurasi persis seperti semula.
+
+### Uji keamanan (menu 10)
+
+Menu 7 menebak status celah dari **kode** (mencari penanda perbaikan resmi); menu 10 **membuktikannya dengan
+simulasi serangan** ke GeoNode lokal, lalu membersihkan jejaknya:
+
+- **K1**: mengunggah GeoJSON dengan nama layer berisi perintah shell (membuat berkas penanda di kontainer celery),
+  lalu memastikan perintah itu **tidak** dijalankan; sekaligus memastikan unggahan biasa tetap berhasil.
+- **K2**: `/proxy` dan pendaftaran *Remote Service* ke alamat dalam (`db:5432`, `169.254.169.254`, GeoServer internal)
+  harus ditolak.
+- **K3**: XML ber-DOCTYPE/entitas dan ber-XSLT ditolak, XML metadata biasa diterima.
+- **K4**: skrip di abstrak dinetralkan, lewat editor metadata (perbaikan resmi 5.x) **atau** saat disimpan (tambalan
+  GeoMDB); teks biasa tidak diubah.
+
+Dataset uji dihapus dan abstrak dikembalikan sesudahnya. Sandi admin dibaca dari `.env` (tidak ditampilkan).
+Kode keluar `3` bila masih ada celah terbuka. Teruji: 5.1.1 lulus 13/0; 4.4.4 tanpa tambalan mendeteksi K1 & K4 rentan.
+
+> **Hanya untuk server yang Anda kelola sendiri atau dengan izin tertulis pengelolanya.** Uji ini mengunggah data
+> uji dan mengubah abstrak untuk sementara. Untuk menilai server pihak lain, cukup baca versinya dari halaman
+> publik (`view-source` → cari `geonode-mapstore-client-vX`): klien v4 = GeoNode 4.x (rentan K1..K4), v5 = 5.x.
+> Jangan menjalankan simulasi serangan ke server yang bukan milik Anda.
+
+## Upgrade GeoNode 4.x ke 5.x
+
+Instansi dengan GeoNode **4.4.x** bisa langsung upgrade ke **5.1.1** (versi 4.0 – 4.3: naik dulu ke 4.4.4, sesuai
+wiki resmi *Upgrade from GeoNode 4 to 5*). Diuji: GeoNode 4.4.4 berisi dataset bergaya, kata kunci, metadata, dan
+pengguna Produsen, di-upgrade di tempat dengan volume Docker yang sama. Hasilnya: 90 migrasi database berjalan tanpa
+galat, semua dataset/gaya/kata kunci/pengguna terbawa, WMS/WFS/CSW berjalan, record lama terbuka di editor metadata
+baru, dan unggahan baru berhasil.
+
+1. **Cadangkan**: `pg_dumpall`, volume data GeoServer (`<proyek>-gsdatadir`), `statics`, `data`, serta `.env` dan
+   berkas compose.
+2. `docker compose down` (**tanpa** `-v`, volume tetap).
+3. Ambil sumber GeoNode 5.1.1 di folder baru. Buat `.env` dari `.env.sample` 5.1.1 (`create-envfile.py`) dengan
+   **rahasia yang sama** dengan 4.x: `ADMIN_PASSWORD`, `GEOSERVER_ADMIN_PASSWORD`, `POSTGRES_PASSWORD`,
+   `GEONODE_DATABASE_PASSWORD`, `GEONODE_GEODATABASE_PASSWORD`, `SECRET_KEY`, `OAUTH2_CLIENT_ID/SECRET`. Samakan
+   `COMPOSE_PROJECT_NAME` (agar volume lama dipakai) dan `SITEURL`. RabbitMQ diganti Redis:
+   `BROKER_URL=redis://redis:6379/0`, `CELERY_RESULT_BACKEND=redis://redis:6379/1`.
+4. `docker compose up -d`. Migrasi berjalan otomatis; pantau `docker logs -f django4<proyek>`.
+5. **Tambahkan aturan REST `/rest/crs` di GeoServer.** Folder data lama tidak punya aturan yang dibutuhkan 5.x;
+   tanpa itu pengguna non-admin mendapat 403 saat klien mencari CRS. Di
+   `<data dir>/security/rest.properties`, sebelum baris terakhir `/**;GET,POST,DELETE,PUT=ROLE_ADMINISTRATOR`:
+
+   ```
+   /rest/crs;GET=IS_AUTHENTICATED_FULLY
+   /rest/crs/**;GET=IS_AUTHENTICATED_FULLY
+   ```
+
+   lalu `docker restart geoserver4<proyek>`.
+6. **Pasang lagi tambalan GeoMDB** (menu 2/3/5). Kontainer baru tidak membawa tambalan dari 4.x. Jalankan menu 7: di
+   5.1.1 K1–K4 sudah aman tanpa tambalan, tinggal konfigurasi Docker (menu 11).
+
 ## Pengaman
 
 - **Hanya mengubah bila kodenya persis dikenali.** Setiap baris yang dimaksud harus muncul tepat sekali dan utuh
@@ -215,7 +386,7 @@ Catatan:
   identik dengan aslinya. Tambalan unggah dan CSW ISO 19115-3 ditolak di 4.x (kode keluar 2, tidak ada yang diubah).
 
 Kode keluar: `0` berhasil/sudah sesuai · `1` galat · `2` kode tidak dikenali (tidak diubah) · `3` tambalan GeoMDB
-belum terpasang (hanya pada `cek`).
+belum terpasang (hanya pada `cek`) · pada `cek-aman`/`uji-aman` nilai `3` berarti masih ada celah terbuka.
 
 ## Penting setelah upgrade
 
@@ -244,6 +415,9 @@ RUN cd /tmp && python tambal_preserve.py tambal-unggah
 COPY geomdb_mdb.py /tmp/
 COPY xslt-mdb /tmp/xslt-mdb
 RUN cd /tmp && python tambal_preserve.py tambal-mdb
+# tambalan keamanan (hanya bagian yang masih rentan di versi itu)
+COPY geomdb_aman.py /tmp/
+RUN cd /tmp && python tambal_preserve.py tambal-aman
 ```
 
 Setelah GeoNode merilis perbaikan bug preserve, tambalan GeoMDB tidak diperlukan lagi: `cek` akan melaporkan

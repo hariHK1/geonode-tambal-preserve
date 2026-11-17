@@ -8,6 +8,9 @@ virtualenv GeoNode tanpa Docker). Skrip pendamping tambal-geonode-preserve.sh me
     python tambal_preserve.py tambal-mdb       # pasang tambalan CSW ISO 19115-3 (MDB)
     python tambal_preserve.py pulihkan-unggah  # lepas tambalan unggah metadata; tambalan GeoMDB tetap
     python tambal_preserve.py pulihkan-mdb     # lepas tambalan CSW ISO 19115-3
+    python tambal_preserve.py cek-aman         # status celah keamanan kode GeoNode (K1..K4)
+    python tambal_preserve.py tambal-aman      # pasang tambalan keamanan pada kode yang masih rentan
+    python tambal_preserve.py pulihkan-aman    # lepas tambalan keamanan
     python tambal_preserve.py pulihkan         # kembalikan kode asli GeoNode (lepas semua tambalan)
 
 1. Tambalan GeoMDB (preserve), GeoNode 4.2.5 s.d. master: geonode/catalogue/models.py menyimpan hasil
@@ -25,6 +28,12 @@ virtualenv GeoNode tanpa Docker). Skrip pendamping tambal-geonode-preserve.sh me
    outputSchema http://standards.iso.org/iso/19115/-3/mdb/2.0, hasil konversi XSLT seperti GeoNetwork. Butuh paket
    saxonche (Saxon-HE, XSLT 2.0): dipasang lewat pip bila belum ada (perlu internet), lalu diuji di proses terpisah
    sebelum kode GeoNode diubah; bila tidak berfungsi, tidak ada yang diubah.
+
+4. Tambalan keamanan, GeoNode 4.x – 5.1.x: memasang geonode/security/geomdb_aman.py (dari geomdb_aman.py / variabel
+   GEOMDB_AMAN_MODUL) beserta baris pemanggil bertanda "# geomdb-aman", HANYA pada kode yang masih rentan
+   (perbaikan resmi GeoNode dibawa mundur): K1 injeksi perintah ogr2ogr lewat nama layer, K2 SSRF pendaftaran
+   layanan & /proxy, K3 XML/SLD unggahan berisi DTD/XSLT/skrip, K4 XSS di isian HTML metadata. GeoNode 4.x: kode
+   unggahan ada di paket "importer" (geonode-importer), juga ditambal.
 
 Kode keluar: 0 berhasil / sudah sesuai · 1 galat · 2 kode tidak dikenali, tidak diubah · 3 tambalan GeoMDB belum
 terpasang (hanya pada cek)
@@ -58,6 +67,11 @@ SAXONCHE = "saxonche==13.1.1"
 # Penanda "saxonche dipasang oleh penambal ini" disimpan di lingkungan Python (sys.prefix), bukan di folder kode:
 # kontainer GeoNode sering berbagi kode (volume) tetapi masing-masing punya venv sendiri.
 PENANDA_SAXONCHE = "geomdb-saxonche-dipasang.txt"
+
+TANDA_AMAN = "# geomdb-aman"
+MODUL_AMAN = "geomdb_aman.py"
+CADANGAN_AMAN = ".geomdb-aman-asli"
+IMPOR_AMAN = "from geonode.security import geomdb_aman"
 
 
 def lokasi():
@@ -154,17 +168,21 @@ class Bagian:
     """Satu perubahan di satu berkas GeoNode: `jangkar` (baris asli yang dikenali, urutan prioritas) diganti /
     disisipi `baris` (masing-masing diberi indentasi jangkar dan TANDA)."""
 
-    def __init__(self, berkas, cara, jangkar, baris, pulih=None, ciri=False, tanda=TANDA):
+    def __init__(self, berkas, cara, jangkar, baris, pulih=None, ciri=False, tanda=TANDA, akar="geonode",
+                 kelompok=None, diperbaiki=None):
         self.berkas, self.cara, self.jangkar, self.baris, self.tanda = berkas, cara, jangkar, baris, tanda
         self.pulih = pulih or (jangkar[0] if cara == "ganti" else None)
         self.ciri = ciri  # jangkar wajib berada di fungsi pembuat record CSW (lihat CIRI)
+        self.akar = akar  # paket Python tempat `berkas` berada (GeoNode 4.x: unggahan ada di paket "importer")
+        self.kelompok = kelompok  # tambalan keamanan: K1..K4
+        self.diperbaiki = diperbaiki  # (berkas relatif thd akar, teks) penanda GeoNode sudah memperbaikinya sendiri
 
     def blok(self):
         return [b + "  " + self.tanda for b in self.baris]
 
     def cari_blok(self, baris):
         """Indeks awal blok sisipan yang utuh dan berada di tempatnya; None bila tidak ada."""
-        blok = self.blok()
+        blok = [_isi(b) for b in self.blok()]  # baris blok boleh berindentasi tambahan (badan if/def)
         kunci = [i for i, b in enumerate(baris) if _isi(b) == blok[-1]]
         if len(kunci) != 1:
             return None
@@ -187,7 +205,7 @@ class Bagian:
         return cocok[0]
 
     def keadaan(self, baris):
-        sisa = any(_isi(b) == self.blok()[-1] for b in baris)
+        sisa = any(_isi(b) == _isi(self.blok()[-1]) for b in baris)
         if self.cari_blok(baris) is not None:
             return "sudah"
         if not sisa and self.cari_jangkar(baris) is not None:
@@ -245,20 +263,87 @@ BAGIAN_MDB = [
 
 
 class Paket:
-    """Tambalan yang memasang modul (dan folder data) ke geonode/catalogue/ beserta baris pemanggilnya."""
+    """Tambalan yang memasang modul (dan folder data) ke geonode/<sub>/ beserta baris pemanggilnya."""
 
-    def __init__(self, nama, bagian, modul, env_modul, cadangan, folder=None, sumber_folder=None, env_folder=None):
+    def __init__(self, nama, bagian, modul, env_modul, cadangan, folder=None, sumber_folder=None, env_folder=None,
+                 sub="catalogue"):
         self.nama, self.bagian, self.modul, self.env_modul, self.cadangan = nama, bagian, modul, env_modul, cadangan
-        self.folder, self.sumber_folder, self.env_folder = folder, sumber_folder, env_folder
+        self.folder, self.sumber_folder, self.env_folder, self.sub = folder, sumber_folder, env_folder, sub
 
     def tujuan_modul(self):
-        return os.path.join(paket(), "catalogue", self.modul)
+        return os.path.join(paket(), self.sub, self.modul)
 
     def tujuan_folder(self):
-        return os.path.join(paket(), "catalogue", self.folder) if self.folder else None
+        return os.path.join(paket(), self.sub, self.folder) if self.folder else None
 
+
+def _aman(berkas, cara, jangkar, baris, kelompok, diperbaiki, akar="geonode"):
+    return Bagian(berkas, cara, jangkar, baris, tanda=TANDA_AMAN, akar=akar, kelompok=kelompok, diperbaiki=diperbaiki)
+
+
+_K1_IMPORTER = ("handlers/common/vector.py", "shlex.quote(original_name)")
+_K1_GEONODE = ("upload/handlers/common/vector.py", "shlex.quote(original_name)")
+_OGR_NLN = "options += f'-nln {alternate} \"{original_name}\"'"
+_OGR_POPEN = 'process = Popen(" ".join(commands), stdout=PIPE, stderr=PIPE, shell=True)'
+_XML_LAMA = "dlxml.fromstring(_xml.read().encode())"
+
+BAGIAN_AMAN = [
+    # K1 injeksi perintah: argumen ogr2ogr dikutip & dijalankan tanpa shell (perbaikan resmi importer 1.1.4 / 5.0.3)
+    # — GeoNode 4.x: paket importer (geonode-importer)
+    _aman("handlers/common/vector.py", "ganti", ['options += f\'"{files.get("base_file")}"\' + " "'],
+          [IMPOR_AMAN, 'options += " " + geomdb_aman.kutip(files.get("base_file")) + " "'], "K1", _K1_IMPORTER,
+          akar="importer"),
+    _aman("handlers/common/vector.py", "ganti", [_OGR_NLN],
+          [IMPOR_AMAN, 'options += "-nln " + geomdb_aman.kutip(alternate) + " " + geomdb_aman.kutip(original_name)'],
+          "K1", _K1_IMPORTER, akar="importer"),
+    _aman("handlers/common/vector.py", "ganti", [_OGR_POPEN],
+          [IMPOR_AMAN, "process = geomdb_aman.jalankan_ogr2ogr(ogr_exe, options)"], "K1", _K1_IMPORTER, akar="importer"),
+    # — GeoNode 5.0.0 – 5.0.2: importer sudah dilebur ke geonode/upload
+    _aman("upload/handlers/common/vector.py", "ganti",
+          ['options += f\'"{input_file}"\' + f" -lco FID={DEFAULT_PK_COLUMN_NAME} "'],
+          [IMPOR_AMAN, 'options += " " + geomdb_aman.kutip(input_file) + f" -lco FID={DEFAULT_PK_COLUMN_NAME} "'],
+          "K1", _K1_GEONODE),
+    _aman("upload/handlers/common/vector.py", "ganti", [_OGR_NLN],
+          [IMPOR_AMAN, 'options += "-nln " + geomdb_aman.kutip(alternate) + " " + geomdb_aman.kutip(original_name)'],
+          "K1", _K1_GEONODE),
+    _aman("upload/handlers/common/vector.py", "ganti", [_OGR_POPEN],
+          [IMPOR_AMAN, "process = geomdb_aman.jalankan_ogr2ogr(ogr_exe, options)"], "K1", _K1_GEONODE),
+    # K2 SSRF: URL layanan & /proxy ke jaringan lokal ditolak (perbaikan resmi: is_safe_url, GeoNode 5.0.3)
+    _aman("services/forms.py", "sesudah", ['proposed_url = self.cleaned_data["url"]'],
+          [IMPOR_AMAN, "if not geomdb_aman.url_aman(proposed_url):", '    raise ValidationError(_("Invalid URL provided"))'],
+          "K2", ("services/forms.py", "is_safe_url(proposed_url)")),
+    _aman("proxy/views.py", "sesudah", ["proxy_allowed_hosts = list(proxy_urls_registry.get_proxy_allowed_hosts())"],
+          [IMPOR_AMAN, "if sec_chk_hosts and geomdb_aman.proxy_ditolak(raw_url, allowed_hosts):",
+           '    return HttpResponse("Invalid URL provided.", status=403, content_type="text/plain")'],
+          "K2", ("proxy/views.py", "is_safe_url(raw_url)")),
+    # K3 XML unggahan berisi DTD/PI/XSLT/skrip ditolak (setara assert_safe_xml, GeoNode 5.1.1)
+    _aman("handlers/xml/handler.py", "ganti", [_XML_LAMA], [IMPOR_AMAN, "geomdb_aman.periksa_xml(_xml.read())"],
+          "K3", ("handlers/xml/handler.py", "assert_safe_xml"), akar="importer"),
+    _aman("handlers/sld/handler.py", "ganti", [_XML_LAMA], [IMPOR_AMAN, "geomdb_aman.periksa_xml(_xml.read())"],
+          "K3", ("handlers/sld/handler.py", "assert_safe_xml"), akar="importer"),
+    _aman("upload/handlers/xml/handler.py", "ganti", [_XML_LAMA], [IMPOR_AMAN, "geomdb_aman.periksa_xml(_xml.read())"],
+          "K3", ("upload/handlers/xml/handler.py", "assert_safe_xml")),
+    _aman("upload/handlers/sld/handler.py", "ganti", [_XML_LAMA], [IMPOR_AMAN, "geomdb_aman.periksa_xml(_xml.read())"],
+          "K3", ("upload/handlers/sld/handler.py", "assert_safe_xml")),
+    _aman("layers/api/views.py", "sebelum",
+          ["dataset_uuid, vals, regions, keywords, _ = parse_metadata(open(metadata_file).read())"],
+          [IMPOR_AMAN, 'geomdb_aman.periksa_xml(open(metadata_file, "rb").read())'],
+          "K3", ("layers/metadata.py", "assert_safe_xml")),  # 5.1.1: parse_metadata() memeriksa sendiri
+    # K4 XSS: isian HTML metadata dibersihkan saat disimpan (perbaikan resmi: GeoNode 5.0.3, mesin metadata baru)
+    _aman("base/models.py", "sesudah", ["def save(self, notify=False, *args, **kwargs):"],
+          ["    " + IMPOR_AMAN, "    geomdb_aman.bersihkan_resource(self)"],
+          "K4", ("metadata/handlers/meta.py", "_sanitize_string")),
+]
+
+KELOMPOK_AMAN = {
+    "K1": "injeksi perintah lewat nama layer unggahan (CVE-2026-33050)",
+    "K2": "SSRF lewat pendaftaran layanan & /proxy (CVE-2026-39922)",
+    "K3": "XML/SLD unggahan berisi DTD, XSLT, atau skrip",
+    "K4": "XSS tersimpan di abstrak & isian HTML metadata (CVE-2026-55649)",
+}
 
 UNGGAH = Paket("unggah metadata", BAGIAN_UNGGAH, MODUL, "GEOMDB_MODUL", CADANGAN_UNGGAH)
+AMAN = Paket("keamanan", BAGIAN_AMAN, MODUL_AMAN, "GEOMDB_AMAN_MODUL", CADANGAN_AMAN, sub="security")
 MDB = Paket("CSW ISO 19115-3", BAGIAN_MDB, MODUL_MDB, "GEOMDB_MDB_MODUL", CADANGAN_MDB,
             folder=FOLDER_MDB, sumber_folder="xslt-mdb", env_folder="GEOMDB_XSLT")
 
@@ -292,8 +377,23 @@ def _isi_folder(akar):
     return isi
 
 
-def _jalur(b):
-    return os.path.join(paket(), *b.berkas.split("/"))
+def akar_paket(nama):
+    """Folder paket Python `nama` yang terpasang; None bila tidak ada (mis. paket importer di GeoNode 5.x)."""
+    if nama == "geonode":
+        return paket()
+    try:
+        spec = importlib.util.find_spec(nama)
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    return list(spec.submodule_search_locations)[0]
+
+
+def _jalur(b, berkas=None):
+    akar = akar_paket(getattr(b, "akar", "geonode"))
+    return os.path.join(akar, *(berkas or b.berkas).split("/")) if akar else os.path.join(
+        "/<paket %s tidak ada>" % b.akar, *(berkas or b.berkas).split("/"))
 
 
 def _berkas(pk):
@@ -500,6 +600,126 @@ def lepas_saxonche():
     return True
 
 
+# ── Tambalan keamanan ────────────────────────────────────────────────────────────────────────────────────────────
+# Tiap bagian dinilai sendiri: belum (kode rentan ada, bisa ditambal) · sudah (tambalan GeoMDB terpasang) ·
+# diperbaiki (GeoNode versi ini sudah memperbaikinya) · tidak-ada (berkas/paket tidak ada di versi ini) ·
+# tidak-dikenali (kode berbeda; dibiarkan).
+
+def keadaan_aman():
+    """([(bagian, keadaan)], keadaan modul: belum|sudah|beda)."""
+    cache, hasil = {}, []
+    for b in AMAN.bagian:
+        jalur = _jalur(b)
+        if akar_paket(b.akar) is None or not os.path.isfile(jalur):
+            hasil.append((b, "tidak-ada"))
+            continue
+        baris = cache.setdefault(jalur, _baca(jalur).splitlines(True))
+        k = b.keadaan(baris)
+        if k != "sudah" and b.diperbaiki:
+            penanda = _jalur(b, b.diperbaiki[0])
+            if os.path.isfile(penanda) and b.diperbaiki[1] in _baca(penanda):
+                k = "diperbaiki"
+        hasil.append((b, k))
+    sumber, tujuan = _sumber_modul(AMAN), AMAN.tujuan_modul()
+    if not os.path.isfile(tujuan):
+        modul = "belum"
+    elif sumber and _baca(sumber) != _baca(tujuan):
+        modul = "beda"
+    else:
+        modul = "sudah"
+    return hasil, modul
+
+
+def ringkasan_aman(bagian, modul):
+    """Satu baris per kelompok K1..K4."""
+    baris = []
+    for kode, nama in KELOMPOK_AMAN.items():
+        nilai = {k for b, k in bagian if b.kelompok == kode}
+        if "belum" in nilai:
+            st = "RENTAN - bisa ditambal (menu 9)"
+        elif "tidak-dikenali" in nilai:
+            st = "kode tidak dikenali - periksa manual / perbarui GeoNode"
+        elif "sudah" in nilai:
+            st = "DITAMBAL GeoMDB" + (" (modul perlu diperbarui)" if modul != "sudah" else "")
+        elif "diperbaiki" in nilai:
+            st = "aman (sudah diperbaiki di GeoNode versi ini)"
+        else:
+            st = "tidak berlaku untuk versi ini"
+        baris.append("  %s %s: %s" % (kode, nama, st))
+    return "\n".join(baris)
+
+
+def pasang_aman():
+    sumber = _sumber_modul(AMAN)
+    if not sumber:
+        print("GALAT: %s tidak ditemukan (letakkan di sebelah skrip ini atau isi variabel %s)."
+              % (AMAN.modul, AMAN.env_modul))
+        return 1
+    bagian, modul = keadaan_aman()
+    belum = [b for b, k in bagian if k == "belum"]
+    perlu_modul = belum or any(k == "sudah" for _, k in bagian)
+    tujuan = AMAN.tujuan_modul()
+    baru_dibuat = not os.path.isfile(tujuan)
+    if perlu_modul and modul != "sudah":  # modul dulu: baris yang dipasang sesudahnya mengimpornya
+        _tulis(tujuan, _baca(sumber))
+    if not belum:
+        print("Diperbarui: %s" % tujuan if perlu_modul and modul != "sudah"
+              else "Tidak ada kode rentan yang bisa ditambal di GeoNode ini - tidak ada yang diubah.")
+        print(ringkasan_aman(*keadaan_aman()))
+        return 0
+    berkas, perubahan = {}, {}
+    for b in belum:
+        jalur = _jalur(b)
+        if jalur not in berkas:
+            berkas[jalur] = _baca(jalur).splitlines(True)
+        berkas[jalur] = b.pasang(berkas[jalur])
+        perubahan[jalur] = (_baca(jalur), "".join(berkas[jalur]))
+    try:
+        _simpan_semua(perubahan, CADANGAN_AMAN)
+    except Exception:
+        if baru_dibuat:
+            _hapus_modul(AMAN)
+        raise
+    sesudah, _ = keadaan_aman()
+    gagal = [b for b, k in sesudah if b in belum and k != "sudah"]
+    if gagal:
+        for jalur, (lama, _) in perubahan.items():  # semua dikembalikan: tidak ada tambalan setengah jadi
+            _tulis(jalur, lama)
+        if baru_dibuat:
+            _hapus_modul(AMAN)
+        print("Verifikasi gagal: %s - semua berkas dikembalikan, tidak ada yang diubah." % ", ".join(
+            b.berkas for b in gagal))
+        return 1
+    print("Ditambal (keamanan): %s" % ", ".join(sorted(perubahan)))
+    print("Modul: %s. Asli dicadangkan sebagai *%s" % (tujuan, CADANGAN_AMAN))
+    print(ringkasan_aman(*keadaan_aman()))
+    return 0
+
+
+def lepas_aman():
+    """Lepas tambalan keamanan yang terpasang. Kembalian: (kode keluar, ada perubahan)."""
+    bagian, _ = keadaan_aman()
+    berkas, perubahan = {}, {}
+    for b, k in bagian:
+        if k != "sudah":
+            continue
+        jalur = _jalur(b)
+        if jalur not in berkas:
+            berkas[jalur] = _baca(jalur).splitlines(True)
+        berkas[jalur] = b.lepas(berkas[jalur])
+        perubahan.setdefault(jalur, [_baca(jalur), None])[1] = "".join(berkas[jalur])
+    _simpan_semua({j: tuple(v) for j, v in perubahan.items()}, None)
+    sisa, _ = keadaan_aman()
+    if not any(k == "sudah" for _, k in sisa):
+        for jalur in _hapus_modul(AMAN):
+            perubahan.setdefault(jalur, None)
+    if perubahan:
+        print("Dilepas (keamanan): %s" % ", ".join(sorted(perubahan)))
+    else:
+        print("Tambalan keamanan tidak terpasang - tidak ada yang dilepas.")
+    return 0, bool(perubahan)
+
+
 def tambal_unggah():
     return pasang(UNGGAH)
 
@@ -593,7 +813,15 @@ def main(aksi):
         else:
             saxonche = "terpasang" if importlib.util.find_spec("saxonche") else "TIDAK terpasang"
             print("Tambalan CSW ISO 19115-3 (MDB): %s Paket saxonche %s." % (ringkasan(MDB, bagian, modul), saxonche))
+        print("Keamanan (celah kode GeoNode):\n" + ringkasan_aman(*keadaan_aman()))
         return {"belum": 3, "sudah": 0, "sudah-unggah": 0, "tidak-dikenali": 2}[st]
+    if aksi == "cek-aman":
+        print("Keamanan (celah kode GeoNode):\n" + ringkasan_aman(*keadaan_aman()))
+        return 3 if any(k == "belum" for _, k in keadaan_aman()[0]) else 0
+    if aksi == "tambal-aman":
+        return pasang_aman()
+    if aksi == "pulihkan-aman":
+        return lepas_aman()[0]
     if aksi == "tambal-unggah":
         return pasang(UNGGAH)
     if aksi == "pulihkan-unggah":
@@ -607,6 +835,8 @@ def main(aksi):
         # di venv masing-masing — penandanya tetap diperiksa di sini.
         kode_mdb, _ = lepas(MDB) if any(k == "sudah" for _, k in keadaan(MDB)[0]) or os.path.isfile(
             MDB.tujuan_modul()) or os.path.isfile(penanda_saxonche()) else (0, False)
+        if any(k == "sudah" for _, k in keadaan_aman()[0]) or os.path.isfile(AMAN.tujuan_modul()):
+            kode_mdb = lepas_aman()[0] or kode_mdb
     if st == "tidak-dikenali":
         print("Kode tidak dikenali - tidak diubah.")
         return 2
@@ -641,7 +871,8 @@ def main(aksi):
         if any(k == "sudah" for _, k in keadaan(UNGGAH)[0]):
             kode, _ = lepas(UNGGAH)
         return kode or kode_mdb
-    print("pemakaian: python tambal_preserve.py cek|tambal|tambal-unggah|tambal-mdb|pulihkan-unggah|pulihkan-mdb|pulihkan")
+    print("pemakaian: python tambal_preserve.py cek|cek-aman|tambal|tambal-unggah|tambal-mdb|tambal-aman|pulihkan-unggah|"
+          "pulihkan-mdb|pulihkan-aman|pulihkan")
     return 1
 
 
