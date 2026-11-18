@@ -59,11 +59,11 @@ GeoNode 5.x — tambalan & alat yang kompatibel:
   5) Tambalan CSW ISO 19115-3 / MDB  — perlu internet untuk saxonche (lolos XSD+Schematron)
   6) Lepas tambalan CSW ISO 19115-3
   — Keamanan —
-  7) Cek celah  — K1..K4 + versi/konfigurasi GeoServer & PostgreSQL
+  7) Cek celah  — K1..K4 + konfigurasi GeoServer, PostgreSQL & header web (tidak mengubah apa pun)
   8) Pasang tambalan keamanan  — hanya kode yang masih rentan
   9) Lepas tambalan keamanan
- 10) Uji keamanan  — simulasi serangan K1..K4, lalu dibersihkan
- 11) Perketat konfigurasi Docker  — image/port GeoServer, image/port PostgreSQL, CSRF/JSONP/CORS, pendaftaran
+ 10) Uji keamanan  — simulasi serangan K1..K4 + cek header/versi web, lalu dibersihkan
+ 11) Perketat konfigurasi Docker  — GeoServer, PostgreSQL, header nginx, versi Tomcat, pendaftaran
  12) Kembalikan konfigurasi Docker (batalkan no. 11; image PostgreSQL pengganti tetap)
   — Lainnya —
  13) Pulihkan kode asli GeoNode (lepas semua tambalan kode)
@@ -99,11 +99,11 @@ GeoNode 4.x — tambalan & alat yang kompatibel:
   — Metadata —
   2) Tambalan GeoMDB (preserve)  — wajib untuk "Kirim ke GeoNode" plugin QGIS GeoMDB
   — Keamanan —
-  3) Cek celah  — K1..K4 + versi/konfigurasi GeoServer & PostgreSQL
+  3) Cek celah  — K1..K4 + konfigurasi GeoServer, PostgreSQL & header web (tidak mengubah apa pun)
   4) Pasang tambalan keamanan  — hanya kode yang masih rentan
   5) Lepas tambalan keamanan
-  6) Uji keamanan  — simulasi serangan K1..K4, lalu dibersihkan
-  7) Perketat konfigurasi Docker  — image/port GeoServer, image/port PostgreSQL, CSRF/JSONP/CORS, pendaftaran
+  6) Uji keamanan  — simulasi serangan K1..K4 + cek header/versi web, lalu dibersihkan
+  7) Perketat konfigurasi Docker  — GeoServer, PostgreSQL, header nginx, versi Tomcat, pendaftaran
   8) Kembalikan konfigurasi Docker (batalkan no. 7; image PostgreSQL pengganti tetap)
   — Lainnya —
   9) Panduan upgrade GeoNode 4.x -> 5.x
@@ -335,8 +335,34 @@ pg_cadangkan() {  # $1 = kontainer db, $2 = folder, $3 = cap waktu: pg_dumpall +
   echo "  -> $dir/postgres-volume-$tgl.tgz (titik pemulihan persis)"
 }
 
+proxy_host() {  # tunnel yang berjalan di HOST dan meneruskan pengunjung ke nginx GeoNode (mis. cloudflared)
+  local n
+  for n in cloudflared; do pgrep -x "$n" >/dev/null 2>&1 && { echo "$n"; return 0; }; done
+  return 0
+}
+
+web_header() {  # $1 = kontainer nginx → header halaman depan GeoNode lewat nginx itu sendiri (huruf kecil)
+  local h opsi
+  h=$(docker exec "$1" sh -c 'echo "$HTTPS_HOST"' </dev/null 2>/dev/null)
+  if [ -n "$h" ]; then
+    opsi=(-k --resolve "$h:443:127.0.0.1" "https://$h/")
+  else
+    h=$(docker exec "$1" sh -c 'echo "$HTTP_HOST"' </dev/null 2>/dev/null); h=${h:-127.0.0.1}
+    opsi=(--resolve "$h:80:127.0.0.1" "http://$h/")
+  fi
+  docker exec "$1" curl -s -m 15 -o /dev/null -D - "${opsi[@]}" </dev/null 2>/dev/null | tr -d '\r' | tr 'A-Z' 'a-z'
+}
+
+anti_framing() { grep -qE '^(x-frame-options:|content-security-policy:.*frame-ancestors)' <<< "$1"; }
+versi_nginx() { sed -n 's/^server: \(nginx\/[0-9][0-9.]*\).*/\1/p' <<< "$1" | head -n1; }
+
+versi_tomcat() {  # $1 = kontainer GeoServer → "Apache Tomcat/x.y.z" bila halaman galatnya menampilkan versi
+  docker exec "$1" curl -s -m 15 "http://localhost:8080/geoserver/geomdb-cek-$$" </dev/null 2>/dev/null \
+    | grep -oE 'Apache Tomcat/[0-9.]+' | head -n1
+}
+
 cek_konfigurasi_geoserver() {
-  local proyek p gs dj v celah port opsi
+  local proyek p gs dj nx v celah port opsi hdr tc
   proyek=$(for n in "${DAFTAR[@]}"; do docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$n" 2>/dev/null; done | sort -u)
   for p in $proyek; do
     echo
@@ -371,6 +397,11 @@ cek_konfigurasi_geoserver() {
         echo "   PERINGATAN CORS GeoServer: semua origin (*) termasuk metode PUT/DELETE"
       fi
       grep -qi '^ENABLE_JSONP=true$' <<< "$opsi" && echo "   PERINGATAN JSONP GeoServer aktif (data terbatas bisa dibaca situs lain lewat sesi pengguna)"
+      tc=$(versi_tomcat "$gs")
+      if [ -n "$tc" ]; then
+        echo "   PERINGATAN halaman galat GeoServer menampilkan versi Tomcat ($tc), juga lewat /geoserver/ publik"
+        echo "              (temuan VA 'Apache Tomcat Default Files') - menu 11, kunci tomcat-info"
+      fi
     else
       echo "   (kontainer GeoServer proyek ini tidak ditemukan)"
     fi
@@ -379,6 +410,26 @@ cek_konfigurasi_geoserver() {
       grep -qiE '^ACCOUNT_OPEN_SIGNUP=(true|1)$' <<< "$opsi" && echo "   PERINGATAN pendaftaran akun mandiri TERBUKA (ACCOUNT_OPEN_SIGNUP=True) - celah yang butuh login bisa dipakai siapa saja"
       grep -qiE '^DEBUG=(true|1)$' <<< "$opsi" && echo "   PERINGATAN DEBUG=True"
       grep -qE '^SECRET_KEY=.+' <<< "$opsi" || echo "   PERINGATAN SECRET_KEY tidak diset - GeoNode memakai kunci bawaan yang publik"
+    fi
+    nx=$(kontainer_layanan "$p" geonode)
+    if [ -n "$nx" ]; then
+      hdr=$(web_header "$nx")
+      if [ -z "$hdr" ]; then
+        echo "   (header halaman GeoNode tidak terbaca lewat $nx - pemeriksaan header dilewati)"
+      else
+        if ! anti_framing "$hdr"; then
+          echo "   PERINGATAN halaman GeoNode tanpa header anti-clickjacking (X-Frame-Options / CSP frame-ancestors) - bisa"
+          echo "              dibingkai situs lain (temuan VA 'Clickjacking') - menu 11, kunci header-nginx"
+        fi
+        v=$(versi_nginx "$hdr")
+        [ -n "$v" ] && echo "   PERINGATAN nginx menampilkan versinya (Server: $v) - menu 11, kunci header-nginx"
+      fi
+      port=$(docker port "$nx" 2>/dev/null | grep -vE '127\.0\.0\.1|\[::1\]' | sed 's/.*://' | sort -un | tr '\n' ' ')
+      if [ -n "$port" ] && [ -n "$(proxy_host)" ]; then
+        echo "   PERINGATAN port nginx GeoNode (${port% }) terbuka ke jaringan, padahal publik dilayani lewat tunnel $(proxy_host):"
+        echo "              login GeoNode bisa lewat HTTP tanpa enkripsi dari jaringan lokal (temuan VA 'Cleartext"
+        echo "              Credentials') - menu 11, kunci port-nginx"
+      fi
     fi
     db=$(docker ps --filter "label=com.docker.compose.project=$p" --filter "label=com.docker.compose.service=db" --format '{{.Names}}' | head -n1)
     if [ -n "$db" ]; then
@@ -410,6 +461,7 @@ cek_konfigurasi_geoserver() {
 TANDA_KONF="# geomdb-aman"
 BERKAS_KONF=docker-compose.geomdb-aman.yml
 BERKAS_PG=docker-compose.geomdb-pg.yml  # image PostgreSQL pengganti; sengaja tidak dilepas menu 12
+FOLDER_AMAN=geomdb-aman  # berkas pendukung menu 11 (template nginx, server.xml Tomcat) yang dipasang hanya-baca
 
 tanya() {  # $1 = pertanyaan, $2 = bawaan y/n → 0 bila ya; dengan -y semua dijawab ya
   local j
@@ -418,13 +470,49 @@ tanya() {  # $1 = pertanyaan, $2 = bawaan y/n → 0 bila ya; dengan -y semua dij
   [[ "${j:-$2}" =~ ^[yY]$ ]]
 }
 
-# Pertanyaan menu 11 bisa dibatasi untuk pemakaian terskrip, mis. PERKETAT_HANYA=image-db ... perketat -y.
-# Kunci: image-geoserver port-geoserver csrf-geoserver port-db image-db ekstensi-db signup; yang tidak disebut = tidak.
-pilih() {  # $1 = kunci, $2 = pertanyaan, $3 = bawaan y/n → 0 bila ya
+# Pertanyaan menu 11 bisa dibatasi untuk pemakaian terskrip, mis. PERKETAT_HANYA=image-db ... perketat -y. Kunci:
+# image-geoserver port-geoserver csrf-geoserver tomcat-info header-nginx port-nginx port-db image-db ekstensi-db signup;
+# yang tidak disebut = tidak. Dengan -y, pertanyaan berbawaan "tidak" (port-nginx) hanya diterapkan bila disebut di sini.
+pilih() {  # $1 = kunci, $2 = pertanyaan, $3 = bawaan y/n, $4 = penjelasan (Masalah/Perubahan/Dampak) → 0 bila ya
   if [ -n "${PERKETAT_HANYA:-}" ] && [[ ",${PERKETAT_HANYA// /}," != *",$1,"* ]]; then
     echo "$2 [dilewati: bukan bagian PERKETAT_HANYA]"; return 1
   fi
+  if [ "$YA" = "-y" ] && [ "$3" = n ] && [ -z "${PERKETAT_HANYA:-}" ]; then
+    echo "$2 [dilewati: bawaannya tidak; untuk -y sebutkan PERKETAT_HANYA=$1]"; return 1
+  fi
+  if [ -n "${4:-}" ]; then echo; echo "[$1]"; sed 's/^/  /' <<< "$4"; fi
   tanya "$2" "$3"
+}
+
+siapkan_nginx() {  # $1 = kontainer nginx, $2 = folder tujuan, $3 = domain tambahan frame-ancestors → template ber-header
+  local nx=$1 out=$2 dom=$3 blok
+  docker exec "$nx" cat /etc/nginx/nginx.conf.envsubst > "$out/nginx.conf.envsubst" </dev/null 2>/dev/null || return 1
+  docker exec "$nx" cat /etc/nginx/sites-enabled/geonode.conf.envsubst > "$out/geonode.conf.envsubst" </dev/null 2>/dev/null || return 1
+  if [ "$(grep -cE '^http \{' "$out/nginx.conf.envsubst")" != 1 ] || [ "$(grep -cE '^location / \{' "$out/geonode.conf.envsubst")" != 1 ]; then
+    echo "  Struktur template nginx tidak dikenali (blok 'http {' / 'location / {')."; return 1
+  fi
+  sed -i "/^http {/a\\    server_tokens off;  $TANDA_KONF: versi nginx tidak ditampilkan" "$out/nginx.conf.envsubst"
+  blok="  $TANDA_KONF: header keamanan (tambal-geonode-preserve.sh menu 11; dilepas menu 12)"
+  blok+=$'\n'"  add_header Content-Security-Policy \"frame-ancestors 'self'$dom\" always;"
+  [ -z "$dom" ] && blok+=$'\n'"  add_header X-Frame-Options \"SAMEORIGIN\" always;"
+  blok+=$'\n'"  add_header X-Content-Type-Options \"nosniff\" always;"
+  blok+=$'\n'"  add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;"
+  blok+=$'\n'"  proxy_hide_header X-Content-Type-Options;  # Django juga mengirimnya: cukup satu salinan"
+  blok+=$'\n'"  proxy_hide_header Referrer-Policy;"
+  BLOK="$blok" awk '{print} /^location \/ \{/ && !d {print ENVIRON["BLOK"]; d=1}' "$out/geonode.conf.envsubst" > "$out/g.tmp" \
+    && mv "$out/g.tmp" "$out/geonode.conf.envsubst"
+  [ "$(grep -c "$TANDA_KONF" "$out/nginx.conf.envsubst")" = 1 ] && [ "$(grep -c "$TANDA_KONF" "$out/geonode.conf.envsubst")" = 1 ]
+}
+
+siapkan_tomcat() {  # $1 = image GeoServer, $2 = folder tujuan → server.xml dengan halaman galat tanpa versi/rincian
+  local img=$1 out=$2
+  docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null 2>&1 || return 1
+  docker run --rm --entrypoint cat "$img" /usr/local/tomcat/conf/server.xml > "$out/server.xml" 2>/dev/null || return 1
+  if [ "$(grep -c '</Host>' "$out/server.xml")" != 1 ] || grep -q 'ErrorReportValve' "$out/server.xml"; then
+    echo "  server.xml image $img tidak dikenali (blok </Host> / ErrorReportValve sudah ada)."; return 1
+  fi
+  sed -i 's#^\([[:space:]]*\)</Host>#\1  <!-- geomdb-aman: halaman galat tanpa versi Tomcat (menu 11; dilepas menu 12) -->\n\1  <Valve className="org.apache.catalina.valves.ErrorReportValve" showReport="false" showServerInfo="false" />\n\1</Host>#' "$out/server.xml"
+  [ "$(grep -c 'showServerInfo="false"' "$out/server.xml")" = 1 ]
 }
 
 proyek_tunggal() {  # proyek compose kontainer GeoNode terpilih; galat bila lebih dari satu
@@ -489,8 +577,9 @@ compose_file_alat() {  # $1 = folder proyek, $2 = kontainer django (daftar berka
 }
 
 perketat() {
-  local p wd dj gs db dbport v tgl isi port jopts origin lama_dj sebelum simpan f
-  local gsisi="" target="" dbisi="" dbimg="" dbver="" dbstatus="" ext_saja=0 aman=() aktif=()
+  local p wd dj gs db nx dbport v tgl isi port jopts origin lama_dj sebelum simpan f hdr tc domain dom d k h situs
+  local gsisi="" nxisi="" nxport="" target="" dbisi="" dbimg="" dbver="" dbstatus="" ext_saja=0 aman=() aktif=()
+  local mnt_nginx=0 mnt_tomcat=0 cek_publik=0 publik_sebelum="" publik_sesudah="" gagal_cek=""
   p=$(proyek_tunggal) || exit 1
   dj=$(kontainer_layanan "$p" django); gs=$(kontainer_layanan "$p" geoserver); db=$(kontainer_layanan "$p" db)
   wd=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$dj")
@@ -503,17 +592,28 @@ perketat() {
       versi_lt "$v" 2.28.0 && target=2.27.6-latest || target=2.28.6-latest
       echo; echo "GeoServer $v rentan:"; celah_geoserver "$v" | sed 's/^/  - /'
       versi_lt "$v" 2.27.0 && echo "  Catatan: lompatan dari $v ke ${target%-latest} - folder data GeoServer dicadangkan dulu."
-      if pilih image-geoserver "Ganti image GeoServer ke geonode/geoserver:$target?" y; then
+      if pilih image-geoserver "Ganti image GeoServer ke geonode/geoserver:$target?" y \
+"Masalah  : GeoServer $v terdampak celah yang dieksploitasi aktif (daftar di atas).
+Perubahan: image diganti geonode/geoserver:$target; folder data GeoServer dicadangkan dulu.
+Dampak   : GeoServer dimulai ulang (±1-2 menit); layer, gaya, dan pengaturannya tetap."; then
         gsisi+=$'\n'"    image: geonode/geoserver:$target"; aman+=("image GeoServer $target")
       fi
     fi
     port=$(docker port "$gs" 8080/tcp 2>/dev/null | grep -vE '127\.0\.0\.1|\[::1\]' | head -n1 | sed 's/.*://')
-    if [ -n "$port" ] && pilih port-geoserver "Port GeoServer $port terbuka ke semua antarmuka. Ikat ke 127.0.0.1 saja?" y; then
+    if [ -n "$port" ] && pilih port-geoserver "Port GeoServer $port terbuka ke semua antarmuka. Ikat ke 127.0.0.1 saja?" y \
+"Masalah  : GeoServer bisa diakses langsung dari jaringan lewat port $port, melewati nginx/GeoNode (halaman galat
+           Tomcat-nya ikut terlihat - temuan VA 'Apache Tomcat Default Files'). Port Docker melewati ufw.
+Perubahan: port diikat ke 127.0.0.1. GeoNode dan pengunjung tetap memakai /geoserver/ lewat nginx.
+Dampak   : alamat http://IP-server:$port/geoserver tidak bisa dipakai lagi dari komputer lain; QGIS dan aplikasi
+           lain memakai https://domain-geonode/geoserver/."; then
       gsisi+=$'\n'"    ports: !override"$'\n'"      - \"127.0.0.1:$port:8080\""; aman+=("port GeoServer $port hanya localhost")
     fi
     jopts=$(docker exec "$gs" sh -c 'echo "$GEOSERVER_JAVA_OPTS"')
     if grep -q 'GEOSERVER_CSRF_DISABLED=true' <<< "$(java_geoserver "$gs")" || docker exec "$gs" env | grep -qi '^ENABLE_JSONP=true$'; then
-      if pilih csrf-geoserver "Aktifkan proteksi CSRF admin GeoServer, matikan JSONP, CORS tanpa PUT/DELETE?" y; then
+      if pilih csrf-geoserver "Aktifkan proteksi CSRF admin GeoServer, matikan JSONP, CORS tanpa PUT/DELETE?" y \
+"Masalah  : proteksi CSRF halaman admin GeoServer mati, JSONP aktif, dan CORS mengizinkan PUT/DELETE dari mana saja.
+Perubahan: CSRF aktif (domain GeoNode diizinkan), JSONP mati, CORS hanya GET/POST/HEAD/OPTIONS.
+Dampak   : situs lain yang memakai JSONP GeoServer berhenti berfungsi (jarang dipakai); GeoNode tidak terpengaruh."; then
         origin=$(docker exec "$dj" sh -c 'echo "$SITEURL"' | sed -E 's#^https?://([^/:]+).*#\1#')
         jopts=$(sed -E 's/ ?-DGEOSERVER_CSRF_DISABLED=true//; s/ ?-DGEOSERVER_CSRF_WHITELIST=[^ ]*//' <<< "$jopts")
         jopts="$jopts -DGEOSERVER_CSRF_WHITELIST=$origin"
@@ -523,11 +623,67 @@ perketat() {
         aman+=("CSRF GeoServer aktif (whitelist $origin), JSONP mati, CORS GET/POST")
       fi
     fi
+    tc=$(versi_tomcat "$gs")
+    if [ -n "$tc" ] && pilih tomcat-info "Sembunyikan versi & rincian galat Tomcat di GeoServer?" y \
+"Masalah  : halaman galat GeoServer menampilkan versi Tomcat ($tc) dan rincian galat - juga lewat alamat publik
+           https://domain/geoserver/... (temuan VA 'Apache Tomcat Default Files').
+Perubahan: server.xml Tomcat dari image yang dipakai ditambah ErrorReportValve (showReport & showServerInfo=false),
+           dipasang hanya-baca dari $FOLDER_AMAN/server.xml; berkas di image tidak diubah.
+Dampak   : halaman galat jadi singkat tanpa versi; GeoServer dimulai ulang (±1 menit)."; then
+      gsisi+=$'\n'"    volumes:"$'\n'"      - ./$FOLDER_AMAN/server.xml:/usr/local/tomcat/conf/server.xml:ro"
+      mnt_tomcat=1; aman+=("halaman galat Tomcat tanpa versi")
+    fi
     [ -n "$gsisi" ] && isi+=$'\n'"  geoserver:$gsisi"
+  fi
+  nx=$(kontainer_layanan "$p" geonode)
+  if [ -n "$nx" ]; then
+    hdr=$(web_header "$nx")
+    if [ -n "$hdr" ] && { ! anti_framing "$hdr" || [ -n "$(versi_nginx "$hdr")" ]; } \
+       && pilih header-nginx "Tambahkan header keamanan di nginx GeoNode?" y \
+"Masalah  : halaman GeoNode bisa dibingkai (iframe) situs lain (temuan VA 'Clickjacking'): template nginx GeoNode
+           sengaja membuang X-Frame-Options dari Django. Versi nginx juga terlihat di header Server.
+Perubahan: Content-Security-Policy frame-ancestors 'self' (+ domain yang Anda izinkan), X-Frame-Options SAMEORIGIN,
+           X-Content-Type-Options nosniff, Referrer-Policy, server_tokens off. Template nginx bertambahan dipasang
+           hanya-baca dari $FOLDER_AMAN/; volume konfigurasi nginx tidak diubah.
+Dampak   : peta/GeoStory GeoNode yang DISEMATKAN (iframe) di situs LAIN berhenti tampil, kecuali domain situs itu
+           diizinkan di pertanyaan berikut. Hanya nginx yang dimulai ulang (beberapa detik)."; then
+      if [ "$YA" = "-y" ]; then
+        domain=${GEOMDB_FRAME_ANCESTORS:-}
+      else
+        echo "  Situs lain yang BOLEH menyematkan halaman GeoNode, mis. https://peta.pemda.go.id (pisahkan spasi)."
+        read -r -p "  Kosongkan bila tidak ada: " domain
+      fi
+      dom=""
+      for d in $domain; do
+        if [[ "$d" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then dom+=" $d"; else echo "  Diabaikan (format harus https://nama-domain): $d"; fi
+      done
+      nxisi+=$'\n'"    volumes:"$'\n'"      - ./$FOLDER_AMAN/nginx.conf.envsubst:/etc/nginx/nginx.conf.envsubst:ro"
+      nxisi+=$'\n'"      - ./$FOLDER_AMAN/geonode.conf.envsubst:/etc/nginx/sites-enabled/geonode.conf.envsubst:ro"
+      mnt_nginx=1; aman+=("header keamanan nginx (frame-ancestors 'self'$dom)")
+    fi
+    nxport=$(docker port "$nx" 2>/dev/null | grep -vE '127\.0\.0\.1|\[::1\]|\[::\]')
+    if [ -n "$nxport" ] && [ -n "$(proxy_host)" ] && command -v curl >/dev/null \
+       && pilih port-nginx "Ikat port nginx GeoNode ke 127.0.0.1 (pengunjung hanya lewat tunnel $(proxy_host))?" n \
+"Masalah  : port nginx GeoNode ($(sed 's/.*://' <<< "$nxport" | sort -un | paste -sd, -)) terbuka ke jaringan lokal, sehingga login
+           GeoNode bisa lewat HTTP tanpa enkripsi (temuan VA 'Web Server Transmits Cleartext Credentials').
+Perubahan: port diikat ke 127.0.0.1; pengunjung publik tetap masuk lewat tunnel $(proxy_host) di server ini.
+Syarat   : tunnel harus mengarah ke http://localhost atau http://127.0.0.1 (cek di dasbor Cloudflare Zero Trust >
+           Networks > Tunnels > Public Hostname). Sesudah diterapkan, alat ini membuka SITEURL; bila tidak lagi
+           terjangkau, perubahan otomatis dibatalkan.
+Dampak   : GeoNode tidak bisa dibuka lewat http://IP-server dari jaringan lokal, termasuk oleh pemindai VA di
+           jaringan itu; selalu pakai alamat domainnya."; then
+      nxisi+=$'\n'"    ports: !override"
+      while read -r k _ h; do nxisi+=$'\n'"      - \"127.0.0.1:${h##*:}:${k%/*}\""; done <<< "$nxport"
+      cek_publik=1; aman+=("port nginx GeoNode hanya localhost")
+    fi
+    [ -n "$nxisi" ] && isi+=$'\n'"  geonode:$nxisi"
   fi
   if [ -n "$db" ]; then
     dbport=$(docker port "$db" 5432/tcp 2>/dev/null | grep -vE '127\.0\.0\.1|\[::1\]' | head -n1 | sed 's/.*://')
-    if [ -n "$dbport" ] && pilih port-db "Port PostgreSQL $dbport terbuka ke semua antarmuka. Ikat ke 127.0.0.1 saja?" y; then
+    if [ -n "$dbport" ] && pilih port-db "Port PostgreSQL $dbport terbuka ke semua antarmuka. Ikat ke 127.0.0.1 saja?" y \
+"Masalah  : PostgreSQL bisa diakses dari jaringan lewat port $dbport; cukup tebak/curi sandi untuk masuk.
+Perubahan: port diikat ke 127.0.0.1; GeoNode tetap tersambung lewat jaringan internal Docker.
+Dampak   : QGIS/DBeaver dari komputer lain tidak bisa langsung ke database - pakai SSH tunnel bila perlu."; then
       dbisi+=$'\n'"    ports: !override"$'\n'"      - \"127.0.0.1:$dbport:5432\""; aman+=("port PostgreSQL $dbport hanya localhost")
     fi
     [ -n "$dbisi" ] && isi+=$'\n'"  db:$dbisi"
@@ -537,19 +693,25 @@ perketat() {
     fi
     read -r dbimg dbver <<< "$(pg_image_pengganti "$db")"
     if [ -n "$dbimg" ]; then
-      echo
-      echo "PostgreSQL $(pg_versi "$db") ($(docker inspect -f '{{.Config.Image}}' "$db")) bisa naik ke $dbver dengan image resmi $dbimg"
-      echo "  (seri PostgreSQL & minor PostGIS sama, sama-sama Alpine). Sebelum diganti: pg_dumpall + salinan volume data"
-      echo "  (PostgreSQL berhenti sebentar); sesudahnya ekstensi PostGIS diperbarui otomatis. Image pengganti disimpan di"
-      echo "  $BERKAS_PG dan TIDAK dilepas menu 12 (kembali ke PostGIS lama tidak didukung). Hanya untuk instalasi yang"
-      echo "  sudah berjalan: image resmi tidak membawa skrip pembuat database GeoNode untuk instalasi baru."
-      pilih image-db "Ganti image PostgreSQL ke $dbimg ($dbver)?" y || dbimg=""
-    elif [ "$dbstatus" = tertinggal ] && pilih ekstensi-db "Ekstensi PostGIS di $db tertinggal dari image. Perbarui sekarang (ALTER EXTENSION ... UPDATE)?" y; then
+      pilih image-db "Ganti image PostgreSQL ke $dbimg ($dbver)?" y \
+"Masalah  : PostgreSQL $(pg_versi "$db") ($(docker inspect -f '{{.Config.Image}}' "$db")) usang; $dbver tersedia di image resmi $dbimg
+           (seri PostgreSQL & minor PostGIS sama, sama-sama Alpine).
+Perubahan: pg_dumpall + salinan volume data dulu (PostgreSQL berhenti sebentar), image diganti, ekstensi PostGIS
+           diperbarui otomatis. Image pengganti disimpan di $BERKAS_PG dan TIDAK dilepas menu 12.
+Dampak   : hanya kontainer db yang dimulai ulang. Hanya untuk instalasi yang sudah berjalan (image resmi tidak
+           membawa skrip pembuat database GeoNode untuk instalasi baru)." || dbimg=""
+    elif [ "$dbstatus" = tertinggal ] && pilih ekstensi-db "Ekstensi PostGIS di $db tertinggal dari image. Perbarui sekarang (ALTER EXTENSION ... UPDATE)?" y \
+"Masalah  : versi ekstensi PostGIS di database tertinggal dari image PostgreSQL yang dipakai.
+Perubahan: pg_dumpall dulu, lalu ALTER EXTENSION ... UPDATE untuk semua ekstensi postgis* di semua database.
+Dampak   : tidak ada kontainer yang dimulai ulang."; then
       ext_saja=1
     fi
   fi
   if docker exec "$dj" env | grep -qiE '^ACCOUNT_OPEN_SIGNUP=(true|1)$' \
-     && pilih signup "Pendaftaran akun mandiri terbuka. Tutup (akun dibuat Walidata/admin)?" y; then
+     && pilih signup "Pendaftaran akun mandiri terbuka. Tutup (akun dibuat Walidata/admin)?" y \
+"Masalah  : siapa saja bisa membuat akun sendiri, lalu memakai celah yang butuh login.
+Perubahan: ACCOUNT_OPEN_SIGNUP=False - akun dibuat Walidata/admin GeoNode.
+Dampak   : tombol daftar (Register) hilang; akun yang sudah ada tetap bisa login."; then
     isi+=$'\n'"  django:"$'\n'"    environment:"$'\n'"      ACCOUNT_OPEN_SIGNUP: \"False\""
     isi+=$'\n'"  celery:"$'\n'"    environment:"$'\n'"      ACCOUNT_OPEN_SIGNUP: \"False\""
     aman+=("pendaftaran mandiri ditutup")
@@ -576,7 +738,7 @@ perketat() {
   simpan="$wd/.geomdb-sebelum-$tgl"; mkdir -p "$simpan"
   for f in "$BERKAS_KONF" "$BERKAS_PG"; do [ -f "$wd/$f" ] && cp -p "$wd/$f" "$simpan/"; done
   batal() {  # .env & berkas alat kembali seperti sebelum menu 11 dijalankan
-    cp -p "$wd/.env.geomdb-aman-$tgl" "$wd/.env"; rm -f "$wd/$BERKAS_KONF" "$wd/$BERKAS_PG"
+    cp -p "$wd/.env.geomdb-aman-$tgl" "$wd/.env"; rm -f "$wd/$BERKAS_KONF" "$wd/$BERKAS_PG"; rm -rf "$wd/${FOLDER_AMAN:?}"
     for f in "$BERKAS_KONF" "$BERKAS_PG"; do [ -f "$simpan/$f" ] && cp -p "$simpan/$f" "$wd/"; done
     rm -rf "$simpan"
   }
@@ -587,6 +749,20 @@ perketat() {
   if [ -n "$dbimg" ]; then
     printf '%s\n# Dibuat %s oleh tambal-geonode-preserve.sh (menu 11): image PostgreSQL pengganti. Tidak dilepas menu 12\n# karena katalog PostGIS sudah diperbarui. Cadangan sebelum penggantian: cadangan-geomdb-aman/postgres-*-%s.*\nservices:\n  db:\n    image: %s\n' \
       "$TANDA_KONF" "$tgl" "$tgl" "$dbimg" > "$wd/$BERKAS_PG"
+  fi
+  if [ $mnt_nginx = 1 ] || [ $mnt_tomcat = 1 ]; then
+    rm -rf "$wd/${FOLDER_AMAN:?}"; mkdir -p "$wd/$FOLDER_AMAN"
+    if [ $mnt_nginx = 1 ] && ! siapkan_nginx "$nx" "$wd/$FOLDER_AMAN" "$dom"; then
+      echo "GALAT: template nginx tidak bisa ditambah header - tidak ada yang diubah."; batal; exit 1
+    fi
+    if [ $mnt_tomcat = 1 ]; then
+      f=$(docker inspect -f '{{.Config.Image}}' "$gs"); [ -n "$target" ] && [[ " ${aman[*]} " == *"image GeoServer"* ]] && f=geonode/geoserver:$target
+      siapkan_tomcat "$f" "$wd/$FOLDER_AMAN" || { echo "GALAT: server.xml Tomcat tidak bisa disiapkan - tidak ada yang diubah."; batal; exit 1; }
+    fi
+  fi
+  if [ $cek_publik = 1 ]; then
+    situs=$(docker exec "$dj" sh -c 'echo "$SITEURL"' </dev/null)
+    publik_sebelum=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$situs" 2>/dev/null)
   fi
   compose_file_alat "$wd" "$dj"
   echo "Menerapkan: $(IFS=';'; echo "${aktif[*]}" | sed 's/;/; /g')"
@@ -614,6 +790,36 @@ perketat() {
   if [ ${#aman[@]} -gt 0 ] && [ -n "$gs" ]; then
     for i in $(seq 80); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(kontainer_layanan "$p" geoserver)" 2>/dev/null)" = healthy ] && break; sleep 3; done
   fi
+  # Verifikasi pengetatan web; bila gagal, SEMUA perubahan menu 11 kali ini dibatalkan (kembali seperti sebelumnya).
+  if [ $mnt_nginx = 1 ] || [ $cek_publik = 1 ]; then
+    nx=$(kontainer_layanan "$p" geonode)
+    for i in $(seq 30); do hdr=$(web_header "$nx"); [ -n "$hdr" ] && break; sleep 2; done
+    [ -z "$hdr" ] && gagal_cek+="nginx GeoNode tidak menjawab; "
+    if [ $mnt_nginx = 1 ] && [ -n "$hdr" ]; then
+      anti_framing "$hdr" || gagal_cek+="header anti-clickjacking tidak muncul; "
+      [ -n "$(versi_nginx "$hdr")" ] && gagal_cek+="versi nginx masih terlihat; "
+    fi
+  fi
+  if [ $mnt_tomcat = 1 ]; then
+    tc=$(versi_tomcat "$(kontainer_layanan "$p" geoserver)")
+    [ -n "$tc" ] && gagal_cek+="versi Tomcat masih terlihat ($tc); "
+  fi
+  if [ $cek_publik = 1 ] && [[ "$publik_sebelum" =~ ^[23] ]]; then
+    for i in $(seq 15); do publik_sesudah=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$situs" 2>/dev/null); [[ "$publik_sesudah" =~ ^[23] ]] && break; sleep 4; done
+    [[ "$publik_sesudah" =~ ^[23] ]] || gagal_cek+="$situs tidak lagi terjangkau (HTTP $publik_sesudah; tunnel mengarah ke IP LAN?); "
+  fi
+  if [ -n "$gagal_cek" ]; then
+    echo "GALAT verifikasi: ${gagal_cek%; }."
+    echo "Pengetatan menu 11 kali ini dibatalkan ($BERKAS_KONF dilepas) ..."
+    kembalikan_konf "$wd" "$dj"; rm -rf "$simpan"
+    (cd "$wd" && docker compose up -d 2>&1 | grep -vE 'Running|Waiting' | sed 's/^/  /')
+    echo "Konfigurasi Docker kembali seperti sebelum menu 11."
+    [ -n "$dbimg" ] && echo "Image PostgreSQL pengganti ($BERKAS_PG) tetap dipakai: katalog PostGIS sudah diperbarui."
+    exit 1
+  fi
+  [ $mnt_nginx = 1 ] && echo "Terverifikasi: header anti-clickjacking aktif, versi nginx tersembunyi."
+  [ $mnt_tomcat = 1 ] && echo "Terverifikasi: halaman galat GeoServer tanpa versi Tomcat."
+  [ $cek_publik = 1 ] && echo "Terverifikasi: $situs tetap terjangkau (HTTP $publik_sesudah) setelah port nginx hanya localhost."
   if [ -n "$dbimg" ]; then
     db=$(kontainer_layanan "$p" db)
     if [ -n "$db" ] && [ "$(docker inspect -f '{{.Config.Image}}' "$db")" = "$dbimg" ] && pg_siap "$db"; then
@@ -636,7 +842,7 @@ perketat() {
 }
 
 kembalikan_konf() {  # $1 = folder proyek, $2 = kontainer django: lepas $BERKAS_KONF (image PostgreSQL pengganti tetap)
-  rm -f "$1/$BERKAS_KONF"
+  rm -f "$1/$BERKAS_KONF"; rm -rf "$1/${FOLDER_AMAN:?}"
   compose_file_alat "$1" "$2"
 }
 
@@ -670,8 +876,8 @@ kembalikan() {
   return 0
 }
 
-uji_aman() {  # menu 13: simulasikan serangan K1..K4 ke GeoNode LOKAL ini, lalu bersihkan jejaknya
-  local p dj ce py wd sandi marker lulus=0 gagal=0 nama out
+uji_aman() {  # menu 10: simulasikan serangan K1..K4 ke GeoNode LOKAL ini, lalu bersihkan jejaknya; cek header/versi web
+  local p dj ce py wd sandi hdj marker lulus=0 gagal=0 out nx gs hdr v tc
   marker=/tmp/geomdb_uji_$$
   p=$(proyek_tunggal) || exit 1
   dj=$(kontainer_layanan "$p" django); ce=$(kontainer_layanan "$p" celery)
@@ -680,10 +886,21 @@ uji_aman() {  # menu 13: simulasikan serangan K1..K4 ke GeoNode LOKAL ini, lalu 
   wd=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$dj")
   sandi=$(grep -m1 '^ADMIN_PASSWORD=' "$wd/.env" 2>/dev/null | cut -d= -f2-)
   [ -n "$sandi" ] || { echo "GALAT: ADMIN_PASSWORD tidak ditemukan di $wd/.env."; return 1; }
+  # nama host yang diterima Django (ALLOWED_HOSTS tidak selalu memuat "localhost"; tanpa ini semua permintaan uji dijawab 400)
+  hdj=$(docker exec "$dj" "$py" -c '
+import ast, os, re
+v = os.getenv("ALLOWED_HOSTS") or ""
+try:
+    d = [str(x) for x in ast.literal_eval(v)]
+except Exception:
+    d = [x for x in re.split(r" *[,|:;] *", v) if x]
+print(next((h for h in ("localhost", "django", "geonode") if not d or "*" in d or h in d), d[0].lstrip(".") if d else "localhost"))
+' </dev/null 2>/dev/null)
 
   echo "Uji keamanan proyek Docker \"$p\" (django=$dj)"
   echo "Uji ini MENSIMULASIKAN serangan sungguhan ke GeoNode LOKAL ini: nama layer berisi perintah,"
   echo "XML ber-DOCTYPE/XSLT, dan skrip di abstrak. Jejaknya (dataset uji, abstrak) dibersihkan sesudahnya."
+  echo "Juga memeriksa header web (anti-clickjacking) dan kebocoran versi nginx/Tomcat, tanpa serangan."
   echo "Jalankan HANYA pada server yang Anda kelola sendiri atau dengan izin tertulis pengelolanya."
   tanya "Lanjutkan uji keamanan?" n || { echo "Dibatalkan."; return 0; }
   echo
@@ -691,20 +908,21 @@ uji_aman() {  # menu 13: simulasikan serangan K1..K4 ke GeoNode LOKAL ini, lalu 
   # ── K1 injeksi perintah lewat nama layer (unggahan nyata, diproses celery) ──
   echo "== K1 injeksi perintah lewat nama layer unggahan"
   [ -n "$ce" ] && docker exec "$ce" rm -f "$marker" >/dev/null 2>&1
-  out=$(docker exec -i -e GEOMDB_SANDI="$sandi" -e GEOMDB_MARKER="$marker" "$dj" "$py" - <<'PY'
+  out=$(docker exec -i -e GEOMDB_SANDI="$sandi" -e GEOMDB_HOST="$hdj" -e GEOMDB_MARKER="$marker" "$dj" "$py" - <<'PY'
 import os, re, time, tempfile, json
 import requests
 B = "http://localhost:8000"; A = ("admin", os.environ["GEOMDB_SANDI"]); M = os.environ["GEOMDB_MARKER"]
+S = requests.Session(); S.headers["Host"] = os.environ.get("GEOMDB_HOST") or "localhost"
 def unggah(isi):
     fh = tempfile.NamedTemporaryFile("w", suffix=".geojson", delete=False); fh.write(isi); fh.close()
     with open(fh.name, "rb") as f:
-        r = requests.post(B + "/api/v2/uploads/upload", files={"base_file": f},
+        r = S.post(B + "/api/v2/uploads/upload", files={"base_file": f},
                           data={"store_spatial_files": "false", "action": "upload"}, auth=A, timeout=90)
     m = re.search(r'"execution_id":\s*"([^"]+)"', r.text); return m.group(1) if m else None
 def tunggu(eid):
     for _ in range(80):
         if not eid: return "?"
-        t = requests.get(B + "/api/v2/executionrequest/" + eid, auth=A, timeout=30).text
+        t = S.get(B + "/api/v2/executionrequest/" + eid, auth=A, timeout=30).text
         m = re.search(r'"status":\s*"([a-z_]+)"', t); s = m.group(1) if m else ""
         if s in ("finished", "failed"): return s
         time.sleep(3)
@@ -715,14 +933,16 @@ print("STATUS_JAHAT", st)
 nama = "geomdb_uji_normal_%d" % int(time.time())
 biasa = '{"type":"FeatureCollection","name":"%s","features":[{"type":"Feature","properties":{"nama":"A"},"geometry":{"type":"Polygon","coordinates":[[[107.6,-2.8],[107.7,-2.8],[107.7,-2.7],[107.6,-2.8]]]}}]}' % nama
 stb = tunggu(unggah(biasa))
-n = re.search(r'"total":\s*(\d+)', requests.get(B + "/api/v2/datasets?search=" + nama, auth=A, timeout=30).text)
+n = re.search(r'"total":\s*(\d+)', S.get(B + "/api/v2/datasets?search=" + nama, auth=A, timeout=30).text)
 print("STATUS_BIASA", stb, "TOTAL", (n.group(1) if n else "0"), "NAMA", nama)
 PY
 )
-  nama=$(sed -n 's/.*NAMA \([^ ]*\).*/\1/p' <<< "$out")
   if [ -n "$ce" ] && docker exec "$ce" test -f "$marker" 2>/dev/null; then
     echo "  GAGAL  perintah sisipan TERJALANKAN di server (RENTAN) — tambal dengan menu 9"; gagal=$((gagal+1))
     docker exec "$ce" rm -f "$marker" >/dev/null 2>&1
+  elif grep -qE 'STATUS_JAHAT (\?|timeout)' <<< "$out"; then
+    echo "  (lewati) unggahan uji tidak diproses ($(sed -n 's/.*STATUS_JAHAT \([^ ]*\).*/status: \1/p' <<< "$out")) - K1 tidak teruji;"
+    echo "           periksa ADMIN_PASSWORD di .env dan kontainer celery, lalu ulangi"
   else
     echo "  OK     perintah sisipan tidak dijalankan ($(sed -n 's/.*STATUS_JAHAT \([^ ]*\).*/status unggah: \1/p' <<< "$out"))"; lulus=$((lulus+1))
   fi
@@ -734,7 +954,7 @@ PY
 
   # ── K2 /proxy, K2 pendaftaran layanan, K3 XML, K4 XSS (di dalam Django) ──
   echo "== K2 SSRF /proxy · K2 layanan · K3 XML/SLD · K4 XSS"
-  out=$(docker exec -i -e GEOMDB_SANDI="$sandi" "$dj" "$py" manage.py shell 2>/dev/null <<'PY'
+  out=$(docker exec -i -e GEOMDB_SANDI="$sandi" -e GEOMDB_HOST="$hdj" "$dj" "$py" manage.py shell 2>/dev/null <<'PY'
 import os, re, tempfile
 import requests
 L = {"lulus": 0, "gagal": 0}
@@ -743,9 +963,10 @@ def hasil(ok, teks):
     print(("  OK     " if ok else "  GAGAL  ") + teks)
 
 B = "http://localhost:8000"; A = ("admin", os.environ["GEOMDB_SANDI"])
+S = requests.Session(); S.headers["Host"] = os.environ.get("GEOMDB_HOST") or "localhost"
 for u in ("http://db:5432/", "http://169.254.169.254/latest/meta-data/", "http://localhost:8080/geoserver/ows"):
     try:
-        k = requests.get(B + "/proxy/", params={"url": u}, auth=A, timeout=20, allow_redirects=False).status_code
+        k = S.get(B + "/proxy/", params={"url": u}, auth=A, timeout=20, allow_redirects=False).status_code
     except Exception as e:
         k = "err"
     hasil(k == 403, "/proxy ke %s ditolak (HTTP %s; diharapkan 403)" % (u, k))
@@ -816,24 +1037,54 @@ PY
   lulus=$((lulus + $(sed -n 's/^RINGKAS \([0-9]*\) .*/\1/p' <<< "$out")))
   gagal=$((gagal + $(sed -n 's/^RINGKAS [0-9]* \([0-9]*\)/\1/p' <<< "$out")))
 
-  # ── bersihkan dataset uji ──
-  if [ -n "$nama" ]; then
-    docker exec -i -e GEOMDB_SANDI="$sandi" -e GEOMDB_NAMA="$nama" "$dj" "$py" - <<'PY' >/dev/null 2>&1
-import os, re, requests
+  # ── bersihkan dataset uji (unggahan biasa & unggahan sisipan, termasuk sisa uji sebelumnya) ──
+  out=$(docker exec -i -e GEOMDB_SANDI="$sandi" -e GEOMDB_HOST="$hdj" "$dj" "$py" - <<'PY' 2>/dev/null
+import os, requests
 B = "http://localhost:8000"; A = ("admin", os.environ["GEOMDB_SANDI"])
-t = requests.get(B + "/api/v2/datasets?search=" + os.environ["GEOMDB_NAMA"], auth=A, timeout=30).text
-for pk in re.findall(r'"pk":\s*(\d+)', t):
-    requests.delete(B + "/api/v2/datasets/" + pk, auth=A, timeout=30)
+S = requests.Session(); S.headers["Host"] = os.environ.get("GEOMDB_HOST") or "localhost"
+n = 0
+try:
+    r = S.get(B + "/api/v2/datasets", params={"search": "geomdb_uji", "page_size": 100}, auth=A, timeout=30).json()
+except Exception:
+    r = {}
+for d in r.get("datasets") or []:
+    nm = d.get("name") or ""
+    # hanya dataset buatan uji ini: geomdb_uji_normal_<waktu> dan nama sisipan yang memuat geomdb_uji_<pid>
+    if nm.startswith("geomdb_uji_normal_") or ("geomdb_uji_" in nm and "touch" in nm):
+        # DELETE /api/v2/datasets/<pk> dijawab 405 di GeoNode 4.x/5.x; hapus lewat resource service (diproses celery)
+        if S.delete(B + "/api/v2/resources/%s/delete" % d["pk"], auth=A, timeout=30).status_code in (200, 202, 204):
+            n += 1
+print("DIHAPUS", n)
 PY
-  fi
+)
+  echo "  (catatan) $(sed -n 's/^DIHAPUS \([0-9]*\)/\1/p' <<< "$out") dataset uji dihapus (diproses celery)"
 
+  # ── konfigurasi web: header & kebocoran versi (temuan VA umum; tanpa serangan) ──
+  echo "== Konfigurasi web: header anti-clickjacking & kebocoran versi"
+  nx=$(kontainer_layanan "$p" geonode); gs=$(kontainer_layanan "$p" geoserver)
+  hdr=""; [ -n "$nx" ] && hdr=$(web_header "$nx")
+  if [ -z "$hdr" ]; then
+    echo "  (lewati) header web: halaman depan GeoNode tidak terbaca lewat kontainer nginx"
+  else
+    if anti_framing "$hdr"; then echo "  OK     halaman GeoNode mengirim header anti-clickjacking"; lulus=$((lulus + 1))
+    else echo "  GAGAL  halaman GeoNode tanpa header anti-clickjacking (menu 11, kunci header-nginx)"; gagal=$((gagal + 1)); fi
+    v=$(versi_nginx "$hdr")
+    if [ -z "$v" ]; then echo "  OK     versi nginx tidak ditampilkan"; lulus=$((lulus + 1))
+    else echo "  GAGAL  nginx menampilkan versinya ($v) (menu 11, kunci header-nginx)"; gagal=$((gagal + 1)); fi
+  fi
+  if [ -n "$gs" ]; then
+    tc=$(versi_tomcat "$gs")
+    if [ -z "$tc" ]; then echo "  OK     halaman galat GeoServer tanpa versi Tomcat"; lulus=$((lulus + 1))
+    else echo "  GAGAL  halaman galat GeoServer menampilkan $tc (menu 11, kunci tomcat-info)"; gagal=$((gagal + 1)); fi
+  fi
   echo
   echo "Hasil uji keamanan: LULUS $lulus, GAGAL $gagal."
   if [ "$gagal" -gt 0 ]; then
-    echo "Ada celah yang masih terbuka. Tambal kode dengan menu 9 (tambal-aman) dan perketat dengan menu 11."
+    echo "Ada yang masih terbuka. Tambal kode dengan menu 8 (tambal-aman; submenu 4.x: 4) dan perketat konfigurasi"
+    echo "dengan menu 11 (submenu 4.x: 7) - kunci yang disebut di baris GAGAL."
     return 3
   fi
-  echo "Semua uji lulus: celah K1..K4 tertutup pada server ini."
+  echo "Semua uji lulus: celah K1..K4 tertutup dan konfigurasi web aman pada server ini."
 }
 
 if [ "$AKSI" = perketat ]; then perketat; exit $?; fi

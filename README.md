@@ -4,7 +4,8 @@
 `metadata_uploaded_preserve` stores `metadata_xml` as a Python bytes repr, an optional GeoNode 5.x patch that
 makes ISO 19139 XML uploaded through the GeoNode UI be served complete by CSW, and an optional GeoNode 5.x patch that
 makes CSW serve ISO 19115-3:2018 (MDB) like GeoNetwork, converted with GeoNetwork's XSLT on Saxon-HE, plus security
-patches for GeoNode 4.x – 5.1.x (command injection, SSRF, unsafe XML, stored XSS) and Docker hardening for GeoServer.
+patches for GeoNode 4.x – 5.1.x (command injection, SSRF, unsafe XML, stored XSS) and Docker hardening for GeoServer,
+PostgreSQL and nginx (security headers, hidden server versions).
 Instructions below are in Indonesian.*
 
 Alat untuk **admin server GeoNode**. Ada tiga tambalan metadata dan satu paket [keamanan](#keamanan-menu-712):
@@ -15,8 +16,8 @@ Alat untuk **admin server GeoNode**. Ada tiga tambalan metadata dan satu paket [
 | **Unggah metadata UI** | XML ISO 19139 yang diunggah lewat UI GeoNode (*Edit → Upload Metadata*) tersaji **lengkap** di CSW dan unduhan ISO, tanpa API. Sudah termasuk tambalan GeoMDB. | 5.x |
 | **CSW ISO 19115-3 (MDB)** | CSW GeoNode juga menyajikan **ISO 19115-3:2018** (`outputSchema=http://standards.iso.org/iso/19115/-3/mdb/2.0`), hasil konversi XSLT seperti GeoNetwork, lolos XSD + Schematron resmi. Berdiri sendiri, bisa dipasang bersama dua tambalan lainnya. | 5.x |
 
-**Panduan bergambar** (PowerPoint, 37 slide): langkah demi langkah dengan screenshot GeoNode 5.1.1 asli dan kotak
-perintah yang bisa disalin, termasuk keamanan, perketat Docker, dan upgrade 4.x → 5.x —
+**Panduan bergambar** (PowerPoint, 39 slide): langkah demi langkah dengan screenshot GeoNode 5.1.1 asli dan kotak
+perintah yang bisa disalin, termasuk keamanan, perketat Docker, temuan pemindai VA, dan upgrade 4.x → 5.x —
 [`docs/Panduan-Penambalan-GeoNode-GeoMDB.pptx`](docs/Panduan-Penambalan-GeoNode-GeoMDB.pptx).
 
 ## Unduh
@@ -86,12 +87,12 @@ atau langsung dengan perintahnya (sama untuk versi apa pun; perintah 5.x ditolak
 ./tambal-geonode-preserve.sh pulihkan-unggah  # lepas tambalan unggah metadata; tambalan GeoMDB tetap
 ./tambal-geonode-preserve.sh tambal-mdb       # tambalan CSW ISO 19115-3 (MDB)
 ./tambal-geonode-preserve.sh pulihkan-mdb     # lepas tambalan CSW ISO 19115-3
-./tambal-geonode-preserve.sh cek-aman         # celah kode GeoNode K1..K4 + versi/konfigurasi GeoServer
+./tambal-geonode-preserve.sh cek-aman         # celah kode K1..K4 + konfigurasi GeoServer, PostgreSQL & header web
 ./tambal-geonode-preserve.sh tambal-aman      # tambalan keamanan pada kode yang masih rentan
 ./tambal-geonode-preserve.sh pulihkan-aman    # lepas tambalan keamanan
-./tambal-geonode-preserve.sh perketat         # perketat konfigurasi Docker (GeoServer, port, CSRF, pendaftaran)
+./tambal-geonode-preserve.sh perketat         # perketat konfigurasi Docker (GeoServer, PostgreSQL, nginx, Tomcat, pendaftaran)
 ./tambal-geonode-preserve.sh kembalikan       # batalkan perketat
-./tambal-geonode-preserve.sh uji-aman         # simulasi serangan K1..K4 ke server ini, lalu dibersihkan
+./tambal-geonode-preserve.sh uji-aman         # simulasi serangan K1..K4 + cek header/versi web, lalu dibersihkan
 ./tambal-geonode-preserve.sh pulihkan         # kembalikan kode asli GeoNode (lepas semua tambalan)
 ```
 
@@ -255,7 +256,17 @@ Nomor menu di bagian ini mengikuti submenu GeoNode 5.x. Di submenu 4.x: 3 cek, 4
 ### Konfigurasi Docker (menu 11 perketat, 12 kembalikan)
 
 Menu 7 juga memeriksa konfigurasi yang tidak bisa diperbaiki dengan menambal kode. Menu 11 memperbaikinya, dengan
-pertanyaan satu per satu:
+pertanyaan satu per satu. Sebelum tiap pertanyaan tampil penjelasan singkat bertanda kuncinya:
+
+```
+[header-nginx]
+  Masalah  : halaman GeoNode bisa dibingkai (iframe) situs lain (temuan VA 'Clickjacking') ...
+  Perubahan: Content-Security-Policy frame-ancestors 'self' (+ domain yang Anda izinkan), X-Frame-Options ...
+  Dampak   : peta/GeoStory GeoNode yang DISEMATKAN (iframe) di situs LAIN berhenti tampil, kecuali ...
+Tambahkan header keamanan di nginx GeoNode? [Y/n]
+```
+
+Yang diperiksa dan ditawarkan:
 
 - **Image GeoServer** diganti versi bertambal bila versinya terdampak celah GeoServer yang sudah dieksploitasi
   aktif: RCE CVE-2024-36401 (< 2.23.6, 2.24.0 – 2.24.3, 2.25.0 – 2.25.1), XXE CVE-2025-58360 (≤ 2.25.5,
@@ -272,12 +283,33 @@ pertanyaan satu per satu:
   login (K1, K3) tidak bisa dipakai orang luar yang mendaftar sendiri.
 - **Image PostgreSQL** (service `db`) diganti image resmi `postgis/postgis:<seri>-<minor PostGIS>-alpine` bila lebih
   baru — lihat di bawah.
+- **Versi Tomcat disembunyikan** (`tomcat-info`): halaman galat GeoServer menampilkan versi Tomcat, juga lewat alamat
+  publik `https://domain/geoserver/…`. `server.xml` dari image yang dipakai disalin, ditambah
+  `ErrorReportValve showReport="false" showServerInfo="false"`, lalu dipasang hanya-baca. Berkas di image tidak diubah.
+- **Header keamanan nginx** (`header-nginx`): template nginx GeoNode sengaja membuang `X-Frame-Options` dari Django,
+  sehingga halaman GeoNode bisa dibingkai situs lain (*clickjacking*). Ditambahkan `Content-Security-Policy:
+  frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, dan
+  `server_tokens off` (versi nginx tidak ditampilkan). **Peta/GeoStory GeoNode yang disematkan lewat iframe di situs
+  lain berhenti tampil** kecuali domain situs itu diizinkan. Menu 11 menanyakannya (contoh
+  `https://peta.pemda.go.id`, pisahkan spasi). Pada mode `-y`, isi variabel `GEOMDB_FRAME_ANCESTORS`. Bila ada
+  domain yang diizinkan, `X-Frame-Options` tidak dikirim karena header itu tidak bisa memuat daftar domain. Template
+  nginx bertambahan dipasang hanya-baca; volume konfigurasi nginx tidak diubah.
+- **Port nginx hanya `127.0.0.1`** (`port-nginx`): hanya ditawarkan bila server memakai tunnel (`cloudflared`) di host,
+  dan bawaannya **tidak**. Tanpa ini login GeoNode bisa dilakukan lewat `http://IP-server` tanpa enkripsi dari jaringan
+  lokal. Syaratnya, tunnel mengarah ke `http://localhost` atau `http://127.0.0.1` (lihat dasbor Cloudflare Zero Trust
+  → Networks → Tunnels → Public Hostname). Sesudah diterapkan, alat ini membuka `SITEURL`. Bila tidak lagi
+  terjangkau, perubahan dibatalkan otomatis. Pemindai VA di jaringan lokal juga tidak bisa lagi memindai lewat IP,
+  jadi pasang setelah pemindaian ulang selesai. Pada mode `-y` kunci ini hanya diterapkan bila disebut di
+  `PERKETAT_HANYA`.
 
 Perubahan ditulis ke berkas tambahan `docker-compose.geomdb-aman.yml` dan baris `COMPOSE_FILE` di `.env`
-(`docker-compose.yml` tidak disunting; `.env` dicadangkan sebagai `.env.geomdb-aman-<tanggal>`). Kontainer lalu
-dibuat ulang, dan tambalan kode yang tadinya terpasang dipasang lagi otomatis. Menu 12 menghapus berkas tambahan dan
-baris itu lalu membuat ulang kontainer. Bila `docker-compose.geomdb-aman.yml` sudah ada, menu 11 tidak menimpanya
-(pengaturan lama bisa hilang tanpa terasa): jalankan menu 12 lalu menu 11 lagi untuk menilai ulang semuanya.
+(`docker-compose.yml` tidak disunting; `.env` dicadangkan sebagai `.env.geomdb-aman-<tanggal>`). Berkas pendukung
+(`server.xml` Tomcat, template nginx) ada di folder `geomdb-aman/` di samping `docker-compose.yml`. Kontainer lalu
+dibuat ulang, dan tambalan kode yang tadinya terpasang dipasang lagi otomatis. Hasilnya **diverifikasi** (nginx
+menjawab, header terkirim, versi tersembunyi, `SITEURL` terjangkau). Bila ada yang gagal, semuanya dikembalikan
+seperti semula. Menu 12 menghapus berkas tambahan, folder `geomdb-aman/`, dan baris itu lalu membuat ulang kontainer.
+Bila `docker-compose.geomdb-aman.yml` sudah ada, menu 11 tidak menimpanya (pengaturan lama bisa hilang tanpa terasa):
+jalankan menu 12 lalu menu 11 lagi untuk menilai ulang semuanya.
 
 Pertanyaan menu 11 bisa dibatasi untuk pemakaian terskrip, misalnya hanya mengganti image PostgreSQL:
 
@@ -285,8 +317,31 @@ Pertanyaan menu 11 bisa dibatasi untuk pemakaian terskrip, misalnya hanya mengga
 PERKETAT_HANYA=image-db ./tambal-geonode-preserve.sh perketat -y
 ```
 
-Kunci: `image-geoserver`, `port-geoserver`, `csrf-geoserver`, `port-db`, `image-db`, `ekstensi-db`, `signup`; yang
-tidak disebut dijawab "tidak".
+Kunci: `image-geoserver`, `port-geoserver`, `csrf-geoserver`, `tomcat-info`, `header-nginx`, `port-nginx`, `port-db`,
+`image-db`, `ekstensi-db`, `signup`; yang tidak disebut dijawab "tidak". Contoh header web saja, dengan satu situs
+yang boleh menyematkan GeoNode:
+
+```bash
+PERKETAT_HANYA=header-nginx,tomcat-info GEOMDB_FRAME_ANCESTORS="https://peta.pemda.go.id" \
+  ./tambal-geonode-preserve.sh perketat -y
+```
+
+#### Temuan pemindai kerentanan (Nessus dan sejenisnya)
+
+Temuan umum laporan VA atas server GeoNode Docker dan kunci menu 11 yang menutupnya:
+
+| Temuan VA | Penyebab | Kunci menu 11 |
+|---|---|---|
+| Apache Tomcat Default Files (Medium) | halaman galat GeoServer menampilkan versi Tomcat, di port 8080 maupun `/geoserver/` publik | `tomcat-info` + `port-geoserver` |
+| Web Application Potentially Vulnerable to Clickjacking (Medium) | nginx GeoNode membuang `X-Frame-Options` | `header-nginx` |
+| Web Server Transmits Cleartext Credentials (Low) | port 80 nginx terbuka ke jaringan lokal | `port-nginx` (server bertunnel) atau HTTPS di nginx |
+| HTTP Server Type and Version (Info) | header `Server: nginx/1.x` | `header-nginx` |
+| Cookie tanpa `HttpOnly` (`csrftoken`), robots.txt, sitemap, dsb. (Info) | perilaku bawaan Django/GeoNode, bukan celah | — |
+
+Jalankan menu 7 untuk melihat temuan mana yang masih terbuka di server Anda, dan menu 10 untuk membuktikan hasilnya.
+Saat memindai GeoNode di balik Cloudflare, isi target Nessus dengan `domain[IP-server]` (misalnya
+`geonode.pemda.go.id[10.0.0.5]`) supaya yang dipindai server Anda, bukan *edge* Cloudflare. Jangan menyertakan `#/`
+pada URL target.
 
 #### PostgreSQL (menu 7 & 11)
 
@@ -324,6 +379,13 @@ biasa diterima, skrip di abstrak dibuang, teks biasa tidak berubah. Di 5.1.1 men
 PUT, dan pendaftaran mandiri, sementara WMS dan unggahan tetap jalan. Menu 9 dan 12 mengembalikan berkas dan
 konfigurasi persis seperti semula.
 
+Pengamanan web diuji di GeoNode 5.1.1 di balik Cloudflare Tunnel (nginx 1.31.7, GeoServer 2.28.6, Tomcat 9.0.123),
+berdasarkan hasil pemindaian Nessus pada server itu. Setelah `header-nginx`, `tomcat-info`, `port-geoserver`, dan
+`port-nginx`, alamat publik mengirim `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN`, versi nginx dan Tomcat
+tidak tampil, WMS tetap jalan, dan port nginx & GeoServer tidak lagi terbuka ke jaringan lokal. Domain yang diizinkan masuk ke
+`frame-ancestors`; isian berformat salah diabaikan. Menu 12 mengembalikan semuanya, dan template di volume nginx
+tetap utuh.
+
 ### Uji keamanan (menu 10)
 
 Menu 7 menebak status celah dari **kode** (mencari penanda perbaikan resmi); menu 10 **membuktikannya dengan
@@ -336,9 +398,14 @@ simulasi serangan** ke GeoNode lokal, lalu membersihkan jejaknya:
 - **K3**: XML ber-DOCTYPE/entitas dan ber-XSLT ditolak, XML metadata biasa diterima.
 - **K4**: skrip di abstrak dinetralkan, lewat editor metadata (perbaikan resmi 5.x) **atau** saat disimpan (tambalan
   GeoMDB); teks biasa tidak diubah.
+- **Konfigurasi web** (tanpa serangan): halaman GeoNode mengirim header anti-clickjacking, versi nginx tidak
+  ditampilkan, halaman galat GeoServer tanpa versi Tomcat. Baris GAGAL menyebut kunci menu 11 yang menutupnya.
 
-Dataset uji dihapus dan abstrak dikembalikan sesudahnya. Sandi admin dibaca dari `.env` (tidak ditampilkan).
-Kode keluar `3` bila masih ada celah terbuka. Teruji: 5.1.1 lulus 13/0; 4.4.4 tanpa tambalan mendeteksi K1 & K4 rentan.
+Dataset uji (unggahan biasa dan unggahan berisi perintah, termasuk sisa uji sebelumnya) dihapus dan abstrak
+dikembalikan sesudahnya. Sandi admin dibaca dari `.env` (tidak ditampilkan). Permintaan uji memakai nama host yang
+diizinkan `ALLOWED_HOSTS`, jadi tetap jalan walau `localhost` tidak terdaftar di sana. Bila unggahan uji tidak
+diproses, K1 dilaporkan "(lewati)", bukan OK. Kode keluar `3` bila masih ada celah terbuka. Teruji: 5.1.1 lulus
+16/0 (setelah `header-nginx` dan `tomcat-info`); 4.4.4 tanpa tambalan mendeteksi K1 & K4 rentan.
 
 > **Hanya untuk server yang Anda kelola sendiri atau dengan izin tertulis pengelolanya.** Uji ini mengunggah data
 > uji dan mengubah abstrak untuk sementara. Untuk menilai server pihak lain, cukup baca versinya dari halaman
