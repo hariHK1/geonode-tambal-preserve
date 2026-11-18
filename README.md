@@ -7,13 +7,17 @@ makes CSW serve ISO 19115-3:2018 (MDB) like GeoNetwork, converted with GeoNetwor
 patches for GeoNode 4.x – 5.1.x (command injection, SSRF, unsafe XML, stored XSS) and Docker hardening for GeoServer.
 Instructions below are in Indonesian.*
 
-Alat untuk **admin server GeoNode**. Ada tiga tambalan metadata dan satu paket [keamanan](#keamanan-menu-812):
+Alat untuk **admin server GeoNode**. Ada tiga tambalan metadata dan satu paket [keamanan](#keamanan-menu-712):
 
 | Tambalan | Untuk apa | GeoNode |
 |---|---|---|
 | **GeoMDB (preserve)** | Memperbaiki bug mode *preserve*: mode yang membuat CSW GeoNode menyajikan metadata lengkap apa adanya. Wajib untuk *Kirim ke GeoNode* di plugin QGIS **GeoMDB – Metadata Editor**. | 4.2.5 – master |
 | **Unggah metadata UI** | XML ISO 19139 yang diunggah lewat UI GeoNode (*Edit → Upload Metadata*) tersaji **lengkap** di CSW dan unduhan ISO, tanpa API. Sudah termasuk tambalan GeoMDB. | 5.x |
 | **CSW ISO 19115-3 (MDB)** | CSW GeoNode juga menyajikan **ISO 19115-3:2018** (`outputSchema=http://standards.iso.org/iso/19115/-3/mdb/2.0`), hasil konversi XSLT seperti GeoNetwork, lolos XSD + Schematron resmi. Berdiri sendiri, bisa dipasang bersama dua tambalan lainnya. | 5.x |
+
+**Panduan bergambar** (PowerPoint, 37 slide): langkah demi langkah dengan screenshot GeoNode 5.1.1 asli dan kotak
+perintah yang bisa disalin, termasuk keamanan, perketat Docker, dan upgrade 4.x → 5.x —
+[`docs/Panduan-Penambalan-GeoNode-GeoMDB.pptx`](docs/Panduan-Penambalan-GeoNode-GeoMDB.pptx).
 
 ## Unduh
 
