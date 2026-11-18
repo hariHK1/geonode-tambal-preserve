@@ -336,6 +336,7 @@ Temuan umum laporan VA atas server GeoNode Docker dan kunci menu 11 yang menutup
 | Web Application Potentially Vulnerable to Clickjacking (Medium) | nginx GeoNode membuang `X-Frame-Options` | `header-nginx` |
 | Web Server Transmits Cleartext Credentials (Low) | port 80 nginx terbuka ke jaringan lokal | `port-nginx` (server bertunnel) atau HTTPS di nginx |
 | HTTP Server Type and Version (Info) | header `Server: nginx/1.x` | `header-nginx` |
+| Web Server Allows Password Auto-Completion (Low) | kolom sandi login memakai `autocomplete="current-password"` (bawaan django-allauth). Peramban modern mengabaikan `autocomplete="off"` pada kolom sandi, dan NIST SP 800-63B serta OWASP ASVS menganjurkan pengelola sandi tetap diizinkan | — terima risiko; tandai di Nessus *Resources → Plugin Rules* (plugin 42057) |
 | Cookie tanpa `HttpOnly` (`csrftoken`), robots.txt, sitemap, dsb. (Info) | perilaku bawaan Django/GeoNode, bukan celah | — |
 
 Jalankan menu 7 untuk melihat temuan mana yang masih terbuka di server Anda, dan menu 10 untuk membuktikan hasilnya.
