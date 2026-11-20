@@ -576,6 +576,16 @@ compose_file_alat() {  # $1 = folder proyek, $2 = kontainer django (daftar berka
   printf '%s COMPOSE_FILE asli: %s\nCOMPOSE_FILE=%s%s\n' "$TANDA_KONF" "$asli" "$dasar" "$tambahan" >> "$wd/.env"
 }
 
+bisa_tulis() {  # $1 = folder proyek Docker → 0 bila folder & .env-nya bisa ditulis user ini (menu 11/12 menulis di sana)
+  [ -w "$1" ] && [ -w "$1/.env" ] && return 0
+  echo "GALAT: user $(id -un) tidak punya izin tulis ke folder proyek Docker $1"
+  echo "       (pemilik: $(stat -c %U "$1" 2>/dev/null); .env: $(stat -c %U "$1/.env" 2>/dev/null))."
+  echo "       Menu ini menyimpan cadangan .env dan berkas pengaturan di folder itu. Jalankan ulang dengan sudo:"
+  echo "         sudo bash $0 $AKSI"
+  echo "       Tidak ada yang diubah."
+  return 1
+}
+
 perketat() {
   local p wd dj gs db nx dbport v tgl isi port jopts origin lama_dj sebelum simpan f hdr tc domain dom d k h situs
   local gsisi="" nxisi="" nxport="" target="" dbisi="" dbimg="" dbver="" dbstatus="" ext_saja=0 aman=() aktif=()
@@ -584,6 +594,7 @@ perketat() {
   dj=$(kontainer_layanan "$p" django); gs=$(kontainer_layanan "$p" geoserver); db=$(kontainer_layanan "$p" db)
   wd=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$dj")
   [ -d "$wd" ] && [ -f "$wd/.env" ] || { echo "GALAT: folder proyek Docker ($wd) atau .env-nya tidak ditemukan."; exit 1; }
+  bisa_tulis "$wd" || exit 1
   echo "Proyek Docker \"$p\" di $wd"
   isi="services:"
   if [ -n "$gs" ]; then
@@ -856,6 +867,7 @@ kembalikan() {
     [ -f "$wd/$BERKAS_PG" ] && echo "Image PostgreSQL pengganti ($BERKAS_PG) sengaja tidak dilepas menu 12: katalog PostGIS sudah diperbarui."
     return 0
   fi
+  bisa_tulis "$wd" || exit 1
   echo "Proyek Docker \"$p\" di $wd. Berkas $BERKAS_KONF:"; sed 's/^/  /' "$wd/$BERKAS_KONF"
   tanya "Kembalikan konfigurasi Docker seperti sebelum menu 11?" n || { echo "Dibatalkan."; return 0; }
   sebelum=$(tambalan_terpasang "$dj"); lama_dj=$(docker inspect -f '{{.Id}}' "$dj")

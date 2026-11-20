@@ -302,6 +302,10 @@ Yang diperiksa dan ditawarkan:
   jadi pasang setelah pemindaian ulang selesai. Pada mode `-y` kunci ini hanya diterapkan bila disebut di
   `PERKETAT_HANYA`.
 
+Menu 11 dan 12 menulis ke folder proyek Docker GeoNode. Bila folder itu milik root (misalnya dibuat dengan
+`sudo`), jalankan alat dengan `sudo bash tambal-geonode-preserve.sh perketat`. Tanpa izin tulis, alat berhenti
+sebelum pertanyaan pertama dan tidak mengubah apa pun.
+
 Perubahan ditulis ke berkas tambahan `docker-compose.geomdb-aman.yml` dan baris `COMPOSE_FILE` di `.env`
 (`docker-compose.yml` tidak disunting; `.env` dicadangkan sebagai `.env.geomdb-aman-<tanggal>`). Berkas pendukung
 (`server.xml` Tomcat, template nginx) ada di folder `geomdb-aman/` di samping `docker-compose.yml`. Kontainer lalu
