@@ -361,6 +361,32 @@ versi_tomcat() {  # $1 = kontainer GeoServer → "Apache Tomcat/x.y.z" bila hala
     | grep -oE 'Apache Tomcat/[0-9.]+' | head -n1
 }
 
+# Tomcat di image GeoServer GeoNode. TOMCAT_AMAN = rilis keamanan Tomcat 9 terakhir yang relevan untuk GeoServer
+# bawaan (per 2026-11-22, tomcat.apache.org/security-9.html): perbaikan sesudahnya (9.0.123-9.0.125) mengenai HTTP/2,
+# JNDIRealm, clustering TLS-PSK, WebSocket+OWB, RewriteValve dan ExpiresFilter, yang tidak aktif di image GeoServer.
+# IMAGE_GS_TERBARU = image GeoServer GeoNode yang Tomcat-nya sudah >= TOMCAT_AMAN (2.28.6-latest: Tomcat 9.0.123;
+# 2.27.6-latest masih 9.0.115). PERBARUI keduanya saat ada rilis keamanan Tomcat atau image GeoServer baru.
+TOMCAT_AMAN=9.0.122
+IMAGE_GS_TERBARU=2.28.6-latest
+
+tomcat_kontainer() {  # $1 = kontainer GeoServer → versi Tomcat x.y.z yang berjalan (tetap terbaca walau tomcat-info aktif)
+  local v
+  v=$(docker exec "$1" sh -c 'echo "$TOMCAT_VERSION"' </dev/null 2>/dev/null)
+  [ -n "$v" ] || v=$(docker exec "$1" sh -c 'grep -m1 -oE "Apache Tomcat Version [0-9.]+" /usr/local/tomcat/RELEASE-NOTES' \
+    </dev/null 2>/dev/null | grep -oE '[0-9.]+$')
+  echo "$v"
+}
+
+tomcat_image() {  # $1 = image → versi Tomcat di dalamnya: dari image lokal, registry (buildx, tanpa unduh), atau diunduh
+  local env
+  env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null)
+  [ -n "$env" ] || env=$(docker buildx imagetools inspect "$1" --format '{{json .Image}}' 2>/dev/null | grep -oE 'TOMCAT_VERSION=[0-9.]+')
+  [ -n "$env" ] || { docker pull -q "$1" >/dev/null 2>&1 && env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null); }
+  grep -oE 'TOMCAT_VERSION=[0-9.]+' <<< "$env" | head -n1 | cut -d= -f2
+}
+
+tomcat_usang() { [[ "$1" == 9.0.* ]] && versi_lt "$1" "$TOMCAT_AMAN"; }  # $1 = versi Tomcat → 0 bila di bawah TOMCAT_AMAN
+
 cek_konfigurasi_geoserver() {
   local proyek p gs dj nx v celah port opsi hdr tc
   proyek=$(for n in "${DAFTAR[@]}"; do docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$n" 2>/dev/null; done | sort -u)
@@ -379,14 +405,22 @@ cek_konfigurasi_geoserver() {
           echo "   RENTAN  GeoServer $v ($gs):"
           sed 's/^/             - /' <<< "$celah"
           if versi_lt "$v" 2.28.0; then
-            echo "           Ganti image GeoServer ke geonode/geoserver:2.27.6-latest (jalur GeoNode 4.4.x / 5.0.x)"
-            echo "           atau 2.28.6-latest (GeoNode 5.x), lalu: docker compose up -d geoserver"
+            echo "           Ganti image GeoServer lewat menu 11 (kunci image-geoserver): GeoNode 5.x ke $IMAGE_GS_TERBARU"
+            echo "           (2.27.6-latest masih membawa Tomcat lama), GeoNode 4.x ke 2.27.6-latest"
           else
-            echo "           Ganti image GeoServer ke geonode/geoserver:2.28.6-latest, lalu: docker compose up -d geoserver"
+            echo "           Ganti image GeoServer lewat menu 11 (kunci image-geoserver) ke $IMAGE_GS_TERBARU"
           fi
         else
           echo "   OK      GeoServer $v ($gs): tidak terdampak celah GeoServer yang dieksploitasi aktif"
         fi
+      fi
+      tc=$(tomcat_kontainer "$gs")
+      if [ -n "$tc" ] && tomcat_usang "$tc"; then
+        echo "   RENTAN  Tomcat $tc di GeoServer ($gs): tertinggal rilis keamanan Tomcat 9 (perlu >= $TOMCAT_AMAN), temuan VA"
+        echo "           'Apache Tomcat 9.0.x < 9.0.NNN multiple vulnerabilities' - menu 11, kunci image-geoserver"
+        echo "           (geonode/geoserver:$IMAGE_GS_TERBARU membawa Tomcat yang lebih baru)"
+      elif [ -n "$tc" ]; then
+        echo "   OK      Tomcat $tc di GeoServer ($gs): tidak tertinggal rilis keamanan Tomcat 9 yang relevan"
       fi
       port=$(docker port "$gs" 2>/dev/null | grep -vE '127\.0\.0\.1|\[::1\]' | sed 's/^/ /' | tr '\n' ' ')
       [ -n "$port" ] && echo "   PERINGATAN port GeoServer terbuka ke semua antarmuka:$port- ikat ke 127.0.0.1 (nginx sudah meneruskan /geoserver/)"
@@ -588,6 +622,7 @@ bisa_tulis() {  # $1 = folder proyek Docker → 0 bila folder & .env-nya bisa di
 
 perketat() {
   local p wd dj gs db nx dbport v tgl isi port jopts origin lama_dj sebelum simpan f hdr tc domain dom d k h situs
+  local gn ttarget t27 masalah catatan
   local gsisi="" nxisi="" nxport="" target="" dbisi="" dbimg="" dbver="" dbstatus="" ext_saja=0 aman=() aktif=()
   local mnt_nginx=0 mnt_tomcat=0 cek_publik=0 publik_sebelum="" publik_sesudah="" gagal_cek=""
   p=$(proyek_tunggal) || exit 1
@@ -599,14 +634,43 @@ perketat() {
   isi="services:"
   if [ -n "$gs" ]; then
     v=$(docker exec "$gs" sh -c 'ls /usr/local/tomcat/webapps/geoserver/WEB-INF/lib' | sed -n 's/^gs-main-\([0-9][0-9.]*[0-9]\)\.jar$/\1/p' | head -n1)
-    if [ -n "$v" ] && [ -n "$(celah_geoserver "$v")" ]; then
-      versi_lt "$v" 2.28.0 && target=2.27.6-latest || target=2.28.6-latest
-      echo; echo "GeoServer $v rentan:"; celah_geoserver "$v" | sed 's/^/  - /'
+    tc=$(tomcat_kontainer "$gs")
+    if [ -n "$v" ] && { [ -n "$(celah_geoserver "$v")" ] || tomcat_usang "$tc"; }; then
+      # Image pengganti: seri 2.27 (jalur GeoNode 4.4/5.0) bila Tomcat-nya cukup baru; selain itu IMAGE_GS_TERBARU.
+      # GeoNode 4.x tetap di 2.27.6 (teruji 4.4.4); image dengan Tomcat baru hanya untuk GeoNode 5.x.
+      gn=$(docker exec "$dj" sh -c 'python3 -c "import geonode;print(geonode.__version__[0])" 2>/dev/null || python -c "import geonode;print(geonode.__version__[0])" 2>/dev/null' </dev/null 2>/dev/null | tr -dc '0-9' | head -c1)
+      target=$IMAGE_GS_TERBARU; t27=""
+      if versi_lt "$v" 2.28.0; then
+        t27=$(tomcat_image geonode/geoserver:2.27.6-latest)
+        { [ "$gn" = 4 ] || { [ -n "$t27" ] && ! tomcat_usang "$t27"; }; } && target=2.27.6-latest
+      fi
+      if [ "$target" = 2.27.6-latest ]; then ttarget=$t27; else ttarget=$(tomcat_image "geonode/geoserver:$target"); fi
+      masalah=""
+      if [ -n "$(celah_geoserver "$v")" ]; then
+        echo; echo "GeoServer $v rentan:"; celah_geoserver "$v" | sed 's/^/  - /'
+        masalah="GeoServer $v terdampak celah yang dieksploitasi aktif (daftar di atas)."
+      fi
+      if tomcat_usang "$tc"; then
+        masalah+="${masalah:+$'\n'           }Tomcat $tc di image ini tertinggal rilis keamanan (perlu >= $TOMCAT_AMAN; temuan VA 'Apache Tomcat"
+        masalah+=$'\n'"           9.0.x < 9.0.NNN multiple vulnerabilities')."
+      fi
+      catatan=""
+      if versi_lt "$v" 2.28.0 && ! versi_lt "${target%-latest}" 2.28.0; then
+        catatan=$'\n'"Catatan  : naik versi minor GeoServer $v -> ${target%-latest}, karena image 2.27.6 masih membawa Tomcat"
+        catatan+=" ${t27:-usang}."$'\n'"           Teruji dengan GeoNode 5.1.1; untuk GeoNode 5.0.x uji dulu di server staging. Menu 12"
+        catatan+=$'\n'"           mengembalikan image lama; folder data GeoServer pulih penuh dari cadangan."
+      elif tomcat_usang "$ttarget"; then
+        catatan=$'\n'"Catatan  : Tomcat di image pengganti masih $ttarget (usang). Image GeoServer dengan Tomcat baru hanya"
+        catatan+=$'\n'"           untuk GeoNode 5.x - rencanakan upgrade GeoNode (menu Panduan upgrade 4.x -> 5.x)."
+      fi
       versi_lt "$v" 2.27.0 && echo "  Catatan: lompatan dari $v ke ${target%-latest} - folder data GeoServer dicadangkan dulu."
-      if pilih image-geoserver "Ganti image GeoServer ke geonode/geoserver:$target?" y \
-"Masalah  : GeoServer $v terdampak celah yang dieksploitasi aktif (daftar di atas).
-Perubahan: image diganti geonode/geoserver:$target; folder data GeoServer dicadangkan dulu.
-Dampak   : GeoServer dimulai ulang (±1-2 menit); layer, gaya, dan pengaturannya tetap."; then
+      if [ "$(docker inspect -f '{{.Config.Image}}' "$gs")" = "geonode/geoserver:$target" ]; then
+        echo; echo "Tomcat $tc di GeoServer tertinggal rilis keamanan, tetapi belum ada image GeoServer GeoNode yang lebih baru"
+        echo "(geonode/geoserver:$target sudah dipakai). Pantau rilis image berikutnya; menu 7 akan terus menandainya."
+      elif pilih image-geoserver "Ganti image GeoServer ke geonode/geoserver:$target?" y \
+"Masalah  : $masalah
+Perubahan: image diganti geonode/geoserver:$target${ttarget:+ (Tomcat $ttarget)}; folder data GeoServer dicadangkan dulu.
+Dampak   : GeoServer dimulai ulang (±1-2 menit); layer, gaya, dan pengaturannya tetap.$catatan"; then
         gsisi+=$'\n'"    image: geonode/geoserver:$target"; aman+=("image GeoServer $target")
       fi
     fi
@@ -634,13 +698,18 @@ Dampak   : situs lain yang memakai JSONP GeoServer berhenti berfungsi (jarang di
         aman+=("CSRF GeoServer aktif (whitelist $origin), JSONP mati, CORS GET/POST")
       fi
     fi
+    catatan=""
+    if tomcat_usang "$(tomcat_kontainer "$gs")" && [[ " ${aman[*]-} " != *"image GeoServer"* ]]; then
+      catatan=$'\n'"Catatan  : ini hanya MENYEMBUNYIKAN versi. Tomcat $(tomcat_kontainer "$gs") yang usang tetap rentan (temuan VA"
+      catatan+=$'\n'"           hilang dari laporan, celahnya tidak) sampai image GeoServer diganti - kunci image-geoserver."
+    fi
     tc=$(versi_tomcat "$gs")
     if [ -n "$tc" ] && pilih tomcat-info "Sembunyikan versi & rincian galat Tomcat di GeoServer?" y \
 "Masalah  : halaman galat GeoServer menampilkan versi Tomcat ($tc) dan rincian galat - juga lewat alamat publik
            https://domain/geoserver/... (temuan VA 'Apache Tomcat Default Files').
 Perubahan: server.xml Tomcat dari image yang dipakai ditambah ErrorReportValve (showReport & showServerInfo=false),
            dipasang hanya-baca dari $FOLDER_AMAN/server.xml; berkas di image tidak diubah.
-Dampak   : halaman galat jadi singkat tanpa versi; GeoServer dimulai ulang (±1 menit)."; then
+Dampak   : halaman galat jadi singkat tanpa versi; GeoServer dimulai ulang (±1 menit).$catatan"; then
       gsisi+=$'\n'"    volumes:"$'\n'"      - ./$FOLDER_AMAN/server.xml:/usr/local/tomcat/conf/server.xml:ro"
       mnt_tomcat=1; aman+=("halaman galat Tomcat tanpa versi")
     fi
@@ -912,7 +981,7 @@ print(next((h for h in ("localhost", "django", "geonode") if not d or "*" in d o
   echo "Uji keamanan proyek Docker \"$p\" (django=$dj)"
   echo "Uji ini MENSIMULASIKAN serangan sungguhan ke GeoNode LOKAL ini: nama layer berisi perintah,"
   echo "XML ber-DOCTYPE/XSLT, dan skrip di abstrak. Jejaknya (dataset uji, abstrak) dibersihkan sesudahnya."
-  echo "Juga memeriksa header web (anti-clickjacking) dan kebocoran versi nginx/Tomcat, tanpa serangan."
+  echo "Juga memeriksa header web (anti-clickjacking), kebocoran versi nginx/Tomcat dan versi Tomcat GeoServer, tanpa serangan."
   echo "Jalankan HANYA pada server yang Anda kelola sendiri atau dengan izin tertulis pengelolanya."
   tanya "Lanjutkan uji keamanan?" n || { echo "Dibatalkan."; return 0; }
   echo
@@ -1072,7 +1141,7 @@ PY
   echo "  (catatan) $(sed -n 's/^DIHAPUS \([0-9]*\)/\1/p' <<< "$out") dataset uji dihapus (diproses celery)"
 
   # ── konfigurasi web: header & kebocoran versi (temuan VA umum; tanpa serangan) ──
-  echo "== Konfigurasi web: header anti-clickjacking & kebocoran versi"
+  echo "== Konfigurasi web: header anti-clickjacking, kebocoran versi & Tomcat GeoServer"
   nx=$(kontainer_layanan "$p" geonode); gs=$(kontainer_layanan "$p" geoserver)
   hdr=""; [ -n "$nx" ] && hdr=$(web_header "$nx")
   if [ -z "$hdr" ]; then
@@ -1088,6 +1157,12 @@ PY
     tc=$(versi_tomcat "$gs")
     if [ -z "$tc" ]; then echo "  OK     halaman galat GeoServer tanpa versi Tomcat"; lulus=$((lulus + 1))
     else echo "  GAGAL  halaman galat GeoServer menampilkan $tc (menu 11, kunci tomcat-info)"; gagal=$((gagal + 1)); fi
+    tc=$(tomcat_kontainer "$gs")
+    if [ -z "$tc" ]; then echo "  (lewati) versi Tomcat di kontainer GeoServer tidak terbaca"
+    elif tomcat_usang "$tc"; then
+      echo "  GAGAL  Tomcat $tc di GeoServer tertinggal rilis keamanan (perlu >= $TOMCAT_AMAN) (menu 11, kunci image-geoserver)"
+      gagal=$((gagal + 1))
+    else echo "  OK     Tomcat $tc di GeoServer tidak tertinggal rilis keamanan yang relevan"; lulus=$((lulus + 1)); fi
   fi
   echo
   echo "Hasil uji keamanan: LULUS $lulus, GAGAL $gagal."

@@ -270,11 +270,17 @@ Yang diperiksa dan ditawarkan:
 
 - **Image GeoServer** diganti versi bertambal bila versinya terdampak celah GeoServer yang sudah dieksploitasi
   aktif: RCE CVE-2024-36401 (< 2.23.6, 2.24.0 – 2.24.3, 2.25.0 – 2.25.1), XXE CVE-2025-58360 (≤ 2.25.5,
-  2.26.0 – 2.26.1), dan SQL injection GHSA-mqjf-5f49-2fjh (< 2.27.6, 2.28.0 – 2.28.4, 3.0.0). Target: `2.27.6-latest`
-  (GeoServer < 2.28) atau `2.28.6-latest`. **Folder data GeoServer dicadangkan dulu** ke
-  `<folder compose>/cadangan-geomdb-aman/`. Celah ini hanya tertutup dengan mengganti image: K3 menambal XML
-  unggahan di kode GeoNode, bukan GeoServer, dan port `127.0.0.1` tidak menolong karena `/geoserver/` tetap
-  dilayani nginx. Kunci `PERKETAT_HANYA=image-geoserver` mengganti image GeoServer saja.
+  2.26.0 – 2.26.1), dan SQL injection GHSA-mqjf-5f49-2fjh (< 2.27.6, 2.28.0 – 2.28.4, 3.0.0). Juga bila **Tomcat**
+  di image itu tertinggal rilis keamanan (di bawah 9.0.122; temuan VA "Apache Tomcat 9.0.x < 9.0.NNN multiple
+  vulnerabilities"). Target: `2.27.6-latest` bila Tomcat-nya cukup baru, selain itu `2.28.6-latest`. Per
+  22-11-2026, `2.27.6-latest` masih membawa Tomcat 9.0.115, jadi GeoServer 2.27.x di GeoNode 5.x naik ke 2.28.6
+  (Tomcat 9.0.123). Kombinasi ini teruji di GeoNode 5.1.1; untuk GeoNode 5.0.x uji dulu di server staging.
+  GeoNode 4.x tetap di `2.27.6-latest` (teruji 4.4.4), dan Tomcat-nya baru tertutup dengan upgrade ke GeoNode 5.x.
+  Versi Tomcat dibaca dengan `docker buildx imagetools` tanpa mengunduh image (bila tidak tersedia, image diunduh).
+  **Folder data GeoServer dicadangkan dulu** ke `<folder compose>/cadangan-geomdb-aman/`. Celah ini hanya tertutup
+  dengan mengganti image: K3 menambal XML unggahan di kode GeoNode, bukan GeoServer, dan port `127.0.0.1` tidak
+  menolong karena `/geoserver/` tetap dilayani nginx. Kunci `PERKETAT_HANYA=image-geoserver` mengganti image
+  GeoServer saja.
 - **Port GeoServer hanya `127.0.0.1`.** Port yang dibuka Docker melewati ufw, jadi GeoServer bisa diakses langsung
   dari luar tanpa lewat nginx/GeoNode. **Port PostgreSQL** (service `db`) juga diikat ke `127.0.0.1` bila terbuka —
   basis data cukup diakses antar-kontainer.
@@ -286,6 +292,9 @@ Yang diperiksa dan ditawarkan:
 - **Versi Tomcat disembunyikan** (`tomcat-info`): halaman galat GeoServer menampilkan versi Tomcat, juga lewat alamat
   publik `https://domain/geoserver/…`. `server.xml` dari image yang dipakai disalin, ditambah
   `ErrorReportValve showReport="false" showServerInfo="false"`, lalu dipasang hanya-baca. Berkas di image tidak diubah.
+  Kunci ini hanya **menyembunyikan** versi: temuan VA berbasis versi Tomcat hilang dari laporan, tetapi Tomcat yang
+  usang tetap rentan sampai image GeoServer diganti (`image-geoserver`). Menu 7 dan 10 tetap membaca versi Tomcat
+  yang sebenarnya dari kontainer.
 - **Header keamanan nginx** (`header-nginx`): template nginx GeoNode sengaja membuang `X-Frame-Options` dari Django,
   sehingga halaman GeoNode bisa dibingkai situs lain (*clickjacking*). Ditambahkan `Content-Security-Policy:
   frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, dan
@@ -336,6 +345,7 @@ Temuan umum laporan VA atas server GeoNode Docker dan kunci menu 11 yang menutup
 
 | Temuan VA | Penyebab | Kunci menu 11 |
 |---|---|---|
+| Apache Tomcat 9.0.x < 9.0.NNN multiple vulnerabilities (Critical/High/Medium) | Tomcat di image GeoServer tertinggal rilis keamanan (mis. `2.27.4`/`2.27.6-latest`: Tomcat 9.0.115) | `image-geoserver` (ke `2.28.6-latest`) |
 | Apache Tomcat Default Files (Medium) | halaman galat GeoServer menampilkan versi Tomcat, di port 8080 maupun `/geoserver/` publik | `tomcat-info` + `port-geoserver` |
 | Web Application Potentially Vulnerable to Clickjacking (Medium) | nginx GeoNode membuang `X-Frame-Options` | `header-nginx` |
 | Web Server Transmits Cleartext Credentials (Low) | port 80 nginx terbuka ke jaringan lokal | `port-nginx` (server bertunnel) atau HTTPS di nginx |
@@ -404,13 +414,16 @@ simulasi serangan** ke GeoNode lokal, lalu membersihkan jejaknya:
 - **K4**: skrip di abstrak dinetralkan, lewat editor metadata (perbaikan resmi 5.x) **atau** saat disimpan (tambalan
   GeoMDB); teks biasa tidak diubah.
 - **Konfigurasi web** (tanpa serangan): halaman GeoNode mengirim header anti-clickjacking, versi nginx tidak
-  ditampilkan, halaman galat GeoServer tanpa versi Tomcat. Baris GAGAL menyebut kunci menu 11 yang menutupnya.
+  ditampilkan, halaman galat GeoServer tanpa versi Tomcat, dan Tomcat di kontainer GeoServer tidak tertinggal rilis
+  keamanan. Baris GAGAL menyebut kunci menu 11 yang menutupnya.
 
 Dataset uji (unggahan biasa dan unggahan berisi perintah, termasuk sisa uji sebelumnya) dihapus dan abstrak
 dikembalikan sesudahnya. Sandi admin dibaca dari `.env` (tidak ditampilkan). Permintaan uji memakai nama host yang
 diizinkan `ALLOWED_HOSTS`, jadi tetap jalan walau `localhost` tidak terdaftar di sana. Bila unggahan uji tidak
 diproses, K1 dilaporkan "(lewati)", bukan OK. Kode keluar `3` bila masih ada celah terbuka. Teruji: 5.1.1 lulus
-16/0 (setelah `header-nginx` dan `tomcat-info`); 4.4.4 tanpa tambalan mendeteksi K1 & K4 rentan.
+17/0 (setelah `header-nginx` dan `tomcat-info`, GeoServer 2.28.6 dengan Tomcat 9.0.123); 4.4.4 tanpa tambalan
+mendeteksi K1 & K4 rentan. Penggantian image GeoServer 2.27.4 (Tomcat 9.0.115) ke 2.28.6 teruji pada proyek tiruan:
+workspace tetap, WMS jalan, menu 12 mengembalikan 2.27.4 dan GeoServer tetap sehat.
 
 > **Hanya untuk server yang Anda kelola sendiri atau dengan izin tertulis pengelolanya.** Uji ini mengunggah data
 > uji dan mengubah abstrak untuk sementara. Untuk menilai server pihak lain, cukup baca versinya dari halaman
